@@ -146,7 +146,7 @@ pub enum Command {
         /// 冊の id（`list` の先頭列。省略なら最初の壊れていない冊）
         #[arg(long, value_name = "ID")]
         book: Option<i64>,
-        /// 開く頁（0 始まり。`serve` の `?p=` と同じ）
+        /// 開く頁（0 始まり）。頁数以上なら最後の頁に丸める（`serve` の `?p=` は範囲外 404）
         #[arg(long, default_value_t = 0)]
         page: usize,
         /// 指定ミリ秒で自動的に閉じる（生存確認用）

@@ -64,7 +64,7 @@ fn nav_delta(i: &egui::InputState) -> isize {
     isize::from(next) - isize::from(prev)
 }
 
-struct ViewApp {
+pub struct ViewApp {
     title: String,
     book: Book,
     page: usize,
@@ -76,28 +76,23 @@ struct ViewApp {
 }
 
 impl ViewApp {
-    fn ensure_loaded(&mut self, ctx: &egui::Context) {
-        if self.loaded == Some(self.page) {
-            return;
-        }
-        self.loaded = Some(self.page);
-        match load_page(&self.book, self.page) {
-            Ok(img) => {
-                let size = [img.width as usize, img.height as usize];
-                let color = egui::ColorImage::from_rgba_unmultiplied(size, &img.rgba);
-                self.texture = Some(ctx.load_texture("page", color, egui::TextureOptions::LINEAR));
-                self.error = None;
-            }
-            Err(msg) => {
-                self.texture = None;
-                self.error = Some(msg);
-            }
+    /// `page` は範囲外なら最後の頁に丸める（[`run`] と同じ）。
+    #[must_use]
+    pub fn new(title: String, book: Book, page: usize, exit_after: Option<Duration>) -> Self {
+        let page = step(page, 0, book.page_count());
+        Self {
+            title,
+            book,
+            page,
+            texture: None,
+            error: None,
+            loaded: None,
+            deadline: exit_after.map(|d| Instant::now() + d),
         }
     }
-}
 
-impl eframe::App for ViewApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    /// 1 フレーム分の描画（入力処理・頁読み込み・ラベル/画像/エラー文言）。
+    pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
         if let Some(deadline) = self.deadline {
@@ -129,6 +124,31 @@ impl eframe::App for ViewApp {
                 ui.add(egui::Image::new((tex.id(), size * scale)));
             });
         }
+    }
+
+    fn ensure_loaded(&mut self, ctx: &egui::Context) {
+        if self.loaded == Some(self.page) {
+            return;
+        }
+        self.loaded = Some(self.page);
+        match load_page(&self.book, self.page) {
+            Ok(img) => {
+                let size = [img.width as usize, img.height as usize];
+                let color = egui::ColorImage::from_rgba_unmultiplied(size, &img.rgba);
+                self.texture = Some(ctx.load_texture("page", color, egui::TextureOptions::LINEAR));
+                self.error = None;
+            }
+            Err(msg) => {
+                self.texture = None;
+                self.error = Some(msg);
+            }
+        }
+    }
+}
+
+impl eframe::App for ViewApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.show(ui);
     }
 }
 
@@ -163,22 +183,16 @@ fn register_font(ctx: &egui::Context, data: Vec<u8>) {
 }
 
 /// 窓を開いて閲覧する。窓が閉じるまで戻らない。`exit_after` があればその時間で自動で閉じる。
+///
+/// `page`（0 始まり）が頁数以上なら**最後の頁**に丸める（先頭には戻らない・エラーにもしない）。
+/// 頁の無い冊は 0 頁目扱いで、窓は開く。`serve` の `?p=` は範囲外が 404 になる点だけ異なる。
 pub fn run(
     title: String,
     book: Book,
     page: usize,
     exit_after: Option<Duration>,
 ) -> anyhow::Result<()> {
-    let page = step(page, 0, book.page_count());
-    let app = ViewApp {
-        title,
-        book,
-        page,
-        texture: None,
-        error: None,
-        loaded: None,
-        deadline: exit_after.map(|d| Instant::now() + d),
-    };
+    let app = ViewApp::new(title, book, page, exit_after);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("manga-viewer")
