@@ -1,5 +1,6 @@
 pub mod book;
 pub mod cli;
+pub mod imgcheck;
 pub mod index;
 pub mod natural;
 pub mod scan;

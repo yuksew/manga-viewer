@@ -55,3 +55,42 @@ pub fn write_folder(dir: &Path, names: &[&str]) {
         fs::write(dir.join(n), &png).unwrap();
     }
 }
+
+/// 名前と中身を指定した合成 zip を書く。
+pub fn write_zip_data(path: &Path, entries: &[(&str, &[u8])]) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut w = zip::ZipWriter::new(File::create(path).unwrap());
+    for (n, data) in entries {
+        w.start_file(*n, SimpleFileOptions::default()).unwrap();
+        w.write_all(data).unwrap();
+    }
+    w.finish().unwrap();
+}
+
+/// 最小の妥当な JPEG（SOF0 1x1 + SOS + EOI）。
+pub fn jpeg_bytes() -> Vec<u8> {
+    let mut v = vec![0xFF, 0xD8];
+    v.extend([0xFF, 0xC0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x11, 0]);
+    v.extend([0xFF, 0xDA, 0, 8, 1, 1, 0, 0, 0x3F, 0]);
+    v.extend([0x12, 0x34, 0xFF, 0xD9]);
+    v
+}
+
+/// 最小の妥当な GIF（1x1、トレーラ 3B 終わり）。
+pub fn gif_bytes() -> Vec<u8> {
+    let mut v = b"GIF89a".to_vec();
+    v.extend([1, 0, 1, 0, 0x80, 0, 0, 0, 0, 0, 255, 255, 255]);
+    v.extend([0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x44, 1, 0, 0x3B]);
+    v
+}
+
+/// RIFF サイズが実長と合う WebP 形のバイト列（VP8L チャンク、中身はダミー）。
+pub fn webp_bytes() -> Vec<u8> {
+    let payload = [0x2F, 0, 0, 0, 0, 0, 0, 0];
+    let mut v = b"RIFF".to_vec();
+    v.extend((4 + 8 + payload.len() as u32).to_le_bytes());
+    v.extend(b"WEBPVP8L");
+    v.extend((payload.len() as u32).to_le_bytes());
+    v.extend(payload);
+    v
+}

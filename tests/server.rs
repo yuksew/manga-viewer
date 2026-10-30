@@ -108,11 +108,11 @@ fn page_bytes_and_range() {
         get(&index, &format!("/page/{a}/99999999999999999999")).status,
         404
     );
-    // 拡張子が jpg の頁は image/jpeg
+    // Content-Type は中身（magic）で決まる: 拡張子 jpg でも中身は PNG なので image/png（p0-4）
     let b = id_of(&index, "b");
     assert_eq!(
         get(&index, &format!("/page/{b}/0")).content_type,
-        "image/jpeg"
+        "image/png"
     );
     // フォルダの冊
     let f = id_of(&index, "f");

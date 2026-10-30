@@ -2,7 +2,8 @@
 //!
 //! * `GET /` — 冊の一覧（索引の自然順）
 //! * `GET /book/<id>[?p=N]` — N 頁目（既定 0）を `<img>` で出す。prev/next と「N/M ページ」つき
-//! * `GET /page/<id>/<n>` — 画像バイト（Content-Type は拡張子から）
+//! * `GET /page/<id>/<n>` — 画像バイト（`imgcheck` で検証済み。Content-Type は magic から）
+//! * `GET /image/<id>/<n>` — 同じ画像を `Content-Disposition: inline` つきで（ブラウザ直表示用）
 //!
 //! 画像のパスは URL から組まず、索引の path と `Book` の頁一覧だけから決める。
 //! 応答は `Connection: close`（HTTP/1.0 流儀）で、接続ごとに 1 スレッド。
@@ -13,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::book::Book;
+use crate::imgcheck;
 use crate::index::{BookRow, Index, Status};
 
 /// リクエストヘッダの上限（これを超えたら読むのをやめる）。
@@ -24,6 +26,8 @@ pub struct Response {
     pub body: Vec<u8>,
     /// 405 のときだけ付く `Allow`
     pub allow: Option<&'static str>,
+    /// 追加ヘッダ（画像の `Content-Disposition` など）
+    pub headers: Vec<(&'static str, String)>,
 }
 
 impl Response {
@@ -33,6 +37,7 @@ impl Response {
             content_type: "text/html; charset=utf-8",
             body: body.into_bytes(),
             allow: None,
+            headers: Vec::new(),
         }
     }
 
@@ -60,6 +65,9 @@ impl Response {
         );
         if let Some(allow) = self.allow {
             head.push_str(&format!("Allow: {allow}\r\n"));
+        }
+        for (k, v) in &self.headers {
+            head.push_str(&format!("{k}: {v}\r\n"));
         }
         head.push_str("\r\n");
         let mut out = head.into_bytes();
@@ -154,7 +162,11 @@ pub fn handle(index: &Index, root: Option<&Path>, request: &str) -> Response {
             None => Ok(not_found()),
         },
         ["page", id, n] => match (parse_num::<i64>(id), parse_num::<usize>(n)) {
-            (Some(id), Some(n)) => image(index, root, id, n),
+            (Some(id), Some(n)) => image(index, root, id, n, false),
+            _ => Ok(not_found()),
+        },
+        ["image", id, n] => match (parse_num::<i64>(id), parse_num::<usize>(n)) {
+            (Some(id), Some(n)) => image(index, root, id, n, true),
             _ => Ok(not_found()),
         },
         _ => Ok(not_found()),
@@ -248,7 +260,13 @@ fn book_page(index: &Index, root: Option<&Path>, id: i64, query: &str) -> Result
     Ok(Response::html(200, page(&row.title, &body)))
 }
 
-fn image(index: &Index, root: Option<&Path>, id: i64, n: usize) -> Result<Response, String> {
+fn image(
+    index: &Index,
+    root: Option<&Path>,
+    id: i64,
+    n: usize,
+    inline: bool,
+) -> Result<Response, String> {
     let (_, book) = match open_book(index, root, id)? {
         Ok(found) => found,
         Err(resp) => return Ok(resp),
@@ -256,18 +274,31 @@ fn image(index: &Index, root: Option<&Path>, id: i64, n: usize) -> Result<Respon
     let Some(name) = book.page_names().get(n).map(|s| (*s).to_string()) else {
         return Ok(Response::error(404, "頁が範囲外です"));
     };
-    let Some(ctype) = content_type(&name) else {
+    if content_type(&name).is_none() {
         return Ok(Response::error(404, "この形式の頁は未対応です"));
-    };
-    match book.read_page_bytes(n) {
-        Ok(body) => Ok(Response {
-            status: 200,
-            content_type: ctype,
-            body,
-            allow: None,
-        }),
-        Err(e) => Ok(Response::error(404, &format!("頁を読めません: {e}"))),
     }
+    let body = match book.read_page_bytes(n) {
+        Ok(body) => body,
+        Err(e) => return Ok(Response::error(404, &format!("頁を読めません: {e}"))),
+    };
+    let kind = match imgcheck::check(&body) {
+        Ok(kind) => kind,
+        Err(why) => return Ok(Response::error(404, &format!("壊れた画像です: {why}"))),
+    };
+    let mut headers = vec![("X-Content-Type-Options", "nosniff".to_string())];
+    if inline {
+        headers.push((
+            "Content-Disposition",
+            format!("inline; filename=\"{}.{}\"", n + 1, kind.ext()),
+        ));
+    }
+    Ok(Response {
+        status: 200,
+        content_type: kind.content_type(),
+        body,
+        allow: None,
+        headers,
+    })
 }
 
 /// 接続 1 本を処理する（ヘッダを読み、応答を書いて閉じる）。
