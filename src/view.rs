@@ -55,6 +55,15 @@ pub fn step(cur: usize, delta: isize, count: usize) -> usize {
         .min(count.saturating_sub(1))
 }
 
+/// このフレームの入力から頁送りの向きを決める（次 +1 / 前 -1、両方や無入力は 0）。
+fn nav_delta(i: &egui::InputState) -> isize {
+    let next = i.key_pressed(egui::Key::ArrowRight)
+        || i.key_pressed(egui::Key::PageDown)
+        || i.key_pressed(egui::Key::Space);
+    let prev = i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::PageUp);
+    isize::from(next) - isize::from(prev)
+}
+
 struct ViewApp {
     title: String,
     book: Book,
@@ -99,13 +108,7 @@ impl eframe::App for ViewApp {
         }
 
         let count = self.book.page_count();
-        let delta = ctx.input(|i| {
-            let next = i.key_pressed(egui::Key::ArrowRight)
-                || i.key_pressed(egui::Key::PageDown)
-                || i.key_pressed(egui::Key::Space);
-            let prev = i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::PageUp);
-            isize::from(next) - isize::from(prev)
-        });
+        let delta = ctx.input(nav_delta);
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -131,22 +134,32 @@ impl eframe::App for ViewApp {
 
 /// 日本語表示用に Windows の標準フォントを順に探して登録する（無ければ既定のまま）。
 fn install_japanese_font(ctx: &egui::Context) {
-    for name in ["YuGothM.ttc", "meiryo.ttc", "msgothic.ttc"] {
-        let path = Path::new(r"C:\Windows\Fonts").join(name);
-        let Ok(data) = std::fs::read(&path) else {
-            continue;
-        };
-        let mut fonts = egui::FontDefinitions::default();
-        fonts.font_data.insert(
-            "jp".into(),
-            std::sync::Arc::new(egui::FontData::from_owned(data)),
-        );
-        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-            fonts.families.entry(family).or_default().push("jp".into());
+    match find_japanese_font(Path::new(r"C:\Windows\Fonts")) {
+        Some((name, data)) => {
+            eprintln!("font\t{name}\t{} bytes", data.len());
+            register_font(ctx, data);
         }
-        ctx.set_fonts(fonts);
-        return;
+        None => eprintln!("font\t(none)\t既定フォントのまま（日本語は豆腐になりうる）"),
     }
+}
+
+/// `dir` から最初に読めた候補フォントの（ファイル名, 中身）。無ければ `None`。
+fn find_japanese_font(dir: &Path) -> Option<(&'static str, Vec<u8>)> {
+    ["YuGothM.ttc", "meiryo.ttc", "msgothic.ttc"]
+        .into_iter()
+        .find_map(|name| Some((name, std::fs::read(dir.join(name)).ok()?)))
+}
+
+fn register_font(ctx: &egui::Context, data: Vec<u8>) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "jp".into(),
+        std::sync::Arc::new(egui::FontData::from_owned(data)),
+    );
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts.families.entry(family).or_default().push("jp".into());
+    }
+    ctx.set_fonts(fonts);
 }
 
 /// 窓を開いて閲覧する。窓が閉じるまで戻らない。`exit_after` があればその時間で自動で閉じる。
@@ -181,4 +194,70 @@ pub fn run(
         }),
     )
     .map_err(|e| anyhow!("ウィンドウを開けません: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `key` を 1 回押した（離した）フレームの `nav_delta` を、ヘッドレスの egui で測る。
+    fn delta_for(key: egui::Key) -> isize {
+        let ctx = egui::Context::default();
+        let mut raw = egui::RawInput::default();
+        raw.events.push(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut delta = 0;
+        let mut out = ctx.run_ui(raw, |ui| delta = ui.ctx().input(nav_delta));
+        out.textures_delta.clear(); // 描画しないので未適用の差分を捨てる
+        delta
+    }
+
+    #[test]
+    fn keys_map_to_page_direction() {
+        assert_eq!(delta_for(egui::Key::ArrowRight), 1);
+        assert_eq!(delta_for(egui::Key::PageDown), 1);
+        assert_eq!(delta_for(egui::Key::Space), 1);
+        assert_eq!(delta_for(egui::Key::ArrowLeft), -1);
+        assert_eq!(delta_for(egui::Key::PageUp), -1);
+        assert_eq!(delta_for(egui::Key::A), 0);
+    }
+
+    #[test]
+    fn step_clamps_at_both_ends() {
+        assert_eq!(step(0, -1, 79), 0);
+        assert_eq!(step(0, 1, 79), 1);
+        assert_eq!(step(78, 1, 79), 78);
+        assert_eq!(step(200, 0, 79), 78);
+        assert_eq!(step(0, 1, 0), 0);
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("mv-view-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn font_search_is_none_when_dir_has_no_candidates() {
+        let dir = scratch("none");
+        assert!(find_japanese_font(&dir).is_none());
+        assert!(find_japanese_font(&dir.join("missing")).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn font_search_prefers_earlier_candidate() {
+        let dir = scratch("order");
+        std::fs::write(dir.join("msgothic.ttc"), b"c").unwrap();
+        assert_eq!(find_japanese_font(&dir).unwrap().0, "msgothic.ttc");
+        std::fs::write(dir.join("meiryo.ttc"), b"b").unwrap();
+        assert_eq!(find_japanese_font(&dir).unwrap().0, "meiryo.ttc");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
