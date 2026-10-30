@@ -71,6 +71,8 @@ pub struct ViewApp {
     /// 現在頁のテクスチャ。壊れ頁では `None`
     texture: Option<egui::TextureHandle>,
     error: Option<String>,
+    /// 現在頁が修復して表示されているときの注記（頁を送ると消える）
+    note: Option<&'static str>,
     loaded: Option<usize>,
     deadline: Option<Instant>,
 }
@@ -86,6 +88,7 @@ impl ViewApp {
             page,
             texture: None,
             error: None,
+            note: None,
             loaded: None,
             deadline: exit_after.map(|d| Instant::now() + d),
         }
@@ -117,6 +120,9 @@ impl ViewApp {
                 format!("この頁は表示できません: {msg}"),
             );
         } else if let Some(tex) = &self.texture {
+            if let Some(note) = self.note {
+                ui.colored_label(egui::Color32::YELLOW, format!("修復して表示: {note}"));
+            }
             let avail = ui.available_size();
             let size = tex.size_vec2();
             let scale = (avail.x / size.x).min(avail.y / size.y).min(1.0);
@@ -136,10 +142,12 @@ impl ViewApp {
                 let size = [img.width as usize, img.height as usize];
                 let color = egui::ColorImage::from_rgba_unmultiplied(size, &img.rgba);
                 self.texture = Some(ctx.load_texture("page", color, egui::TextureOptions::LINEAR));
+                self.note = img.repair.map(decode::Repair::note);
                 self.error = None;
             }
             Err(msg) => {
                 self.texture = None;
+                self.note = None;
                 self.error = Some(msg);
             }
         }

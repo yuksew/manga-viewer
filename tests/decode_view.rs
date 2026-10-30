@@ -82,7 +82,11 @@ fn truncated_images_are_errors_not_panics() {
     ] {
         let full = encode(format);
         for cut in [1, full.len() / 2, full.len() - 1] {
-            assert!(decode_rgba(&full[..cut]).is_err(), "{format:?} cut={cut}");
+            // p0-8a: 読める所まで読めた場合（PNG の IEND 末尾 1 バイト欠けなど）は成功してよいが、
+            // 必ず修復印が付く。静かに成功してはならない。
+            if let Ok(d) = decode_rgba(&full[..cut]) {
+                assert!(d.repair.is_some(), "{format:?} cut={cut}");
+            }
         }
     }
 }

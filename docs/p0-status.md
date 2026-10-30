@@ -52,3 +52,9 @@ qwen-p0 の実装はこれと異なる形になっている:
 3. decode（圧縮内部・PNG CRC の検出もここ）
 4. 表紙サムネイル（`covers` 書き込み + CASCADE のテスト）
 5. 閲覧 UI の方式（設計の egui か、現状のブラウザ配信か）の決定
+
+## p0-8a 破損本体の自動修復
+- `decode_rgba`: strict → 終端マーカー（JPEG EOI / PNG IEND）で切って strict → imgcheck の終端検査を外した lax 復号、の順。成功時 `Decoded.repair` に `TrailingGarbage{len}` / `Truncated`。先頭側破損・署名不明・巨大寸法は従来どおりエラー。
+- 仕様の順序から変更: 「切り詰め」を lax より先に試す（正確に直せるうえ、印が `trailing-garbage` と正しく付くため）。
+- view: 修復頁は黄色の「修復して表示: …」を画像の上に出す（頁送りで消える）。serve: `X-MV-Repaired: trailing-garbage|truncated`。末尾ゴミは切って返し、truncated は元バイトのまま返す。
+- 副作用: EOI だけ欠けた JPEG・IEND/トレーラだけ欠けた PNG/GIF は、全画素が読めるため 422 → 200+印 に変わった（image_check の期待値を更新）。

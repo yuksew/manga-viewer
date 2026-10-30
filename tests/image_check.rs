@@ -128,10 +128,12 @@ fn per_page_verdicts_across_two_books() {
         (a, 0, Some(("image/png", &png))),
         (a, 1, None),
         (a, 2, Some(("image/gif", &gif))),
-        (b, 0, None),
+        // p0-8a: EOI だけ欠けた JPEG は読める所まで復号して 200（X-MV-Repaired: truncated）
+        (b, 0, Some(("image/jpeg", &jpg_cut))),
         (b, 1, Some(("image/jpeg", &jpg))),
         (b, 2, Some(("image/webp", &webp))),
-        (b, 3, None),
+        // GIF もトレーラ 1 バイト欠けなら全画素が読めるので同様に修復
+        (b, 3, Some(("image/gif", &gif_cut))),
         (b, 4, None),
     ];
     for (id, n, want) in cases {

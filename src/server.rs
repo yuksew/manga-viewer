@@ -2,7 +2,7 @@
 //!
 //! * `GET /` — 冊の一覧（索引の自然順）
 //! * `GET /book/<id>[?p=N]` — N 頁目（既定 0）を `<img>` で出す。prev/next と「N/M ページ」つき
-//! * `GET /page/<id>/<n>` — 画像バイト（`decode` で実復号して検証済み。壊れていれば 422。Content-Type は magic から）
+//! * `GET /page/<id>/<n>` — 画像バイト（`decode` で実復号して検証済み。壊れていれば 422。修復して読めた頁は `X-MV-Repaired` 付きで 200。Content-Type は magic から）
 //! * `GET /image/<id>/<n>` — 同じ画像を `Content-Disposition: inline` つきで（ブラウザ直表示用）
 //!
 //! **デバッグ専用**（P0 の最終形は `view`）。view との差の扱いは docs/p0-6-design-options.md §6。
@@ -285,8 +285,8 @@ fn image(
         Err(e) => return Ok(Response::error(404, &format!("頁を読めません: {e}"))),
     };
     // view と同じ検証（imgcheck + 実復号）を通し、文言も揃える。壊れていれば 422。
-    let kind = match decode::decode_rgba(&body) {
-        Ok(decoded) => decoded.kind,
+    let decoded = match decode::decode_rgba(&body) {
+        Ok(decoded) => decoded,
         Err(e) => {
             return Ok(Response::error(
                 422,
@@ -294,7 +294,16 @@ fn image(
             ));
         }
     };
+    let kind = decoded.kind;
+    let mut body = body;
     let mut headers = vec![("X-Content-Type-Options", "nosniff".to_string())];
+    // 修復で読めた頁は、黙らず印を付ける。余分な末尾は切って返す（切れた本体はそのまま）。
+    if let Some(repair) = decoded.repair {
+        headers.push(("X-MV-Repaired", repair.as_str().to_string()));
+        if let decode::Repair::TrailingGarbage { len } = repair {
+            body.truncate(len);
+        }
+    }
     if inline {
         headers.push((
             "Content-Disposition",
