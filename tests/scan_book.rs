@@ -150,6 +150,9 @@ fn cli_index_summarizes() {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_manga-viewer"))
         .arg("index")
         .arg(&t.0)
+        .arg("--db")
+        .arg(t.0.join("db-out/index.db"))
+        .env_remove("MANGA_VIEWER_DATA")
         .output()
         .unwrap();
     assert!(out.status.success());

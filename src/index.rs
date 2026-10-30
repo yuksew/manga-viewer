@@ -21,7 +21,7 @@ use crate::natural::natural_cmp;
 use crate::scan::{self, BookEntry, BookKind};
 
 /// `PRAGMA user_version` の値。合わなければ DB を捨てて作り直す（設計 §2.2。移行は作らない）。
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// 1 回のトランザクションに入れる冊数（設計 §2.2）。
 pub const BATCH_SIZE: usize = 50;
@@ -39,7 +39,8 @@ pub const DB_FILE_NAME: &str = "index.db";
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS books (
     id INTEGER PRIMARY KEY,
-    path TEXT NOT NULL UNIQUE,
+    key TEXT NOT NULL UNIQUE,
+    path TEXT NOT NULL,
     kind TEXT NOT NULL,
     mtime_ns INTEGER NOT NULL,
     size INTEGER NOT NULL,
@@ -60,9 +61,10 @@ CREATE TABLE IF NOT EXISTS covers (
 const SELECT_BOOKS: &str = "SELECT id, path, kind, title, page_count, status, error, mtime_ns, size, scanned_at FROM books";
 
 const UPSERT_BOOK: &str =
-    "INSERT INTO books (path, kind, mtime_ns, size, title, page_count, status, error, scanned_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-ON CONFLICT(path) DO UPDATE SET
+    "INSERT INTO books (key, path, kind, mtime_ns, size, title, page_count, status, error, scanned_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+ON CONFLICT(key) DO UPDATE SET
+    path = excluded.path,
     kind = excluded.kind,
     mtime_ns = excluded.mtime_ns,
     size = excluded.size,
@@ -73,13 +75,18 @@ ON CONFLICT(path) DO UPDATE SET
     scanned_at = excluded.scanned_at";
 
 const DELETE_COVER: &str =
-    "DELETE FROM covers WHERE book_id = (SELECT id FROM books WHERE path = ?1)";
+    "DELETE FROM covers WHERE book_id = (SELECT id FROM books WHERE key = ?1)";
 
 const DELETE_BOOK: &str = "DELETE FROM books WHERE id = ?1";
 
 /// 索引 DB の失敗。
 #[derive(Error, Debug)]
 pub enum IndexError {
+    #[error(
+        "索引 DB が壊れています（SQLite のファイルではありません）: {}\n削除するか、`--db` で別のファイルを指定してください",
+        .path.display()
+    )]
+    NotADatabase { path: PathBuf },
     #[error("索引 DB のフォルダを作れません: {}", .path.display())]
     CreateDir {
         path: PathBuf,
@@ -218,7 +225,14 @@ impl Index {
             path: path.to_path_buf(),
             source,
         })?;
-        prepare(&conn)?;
+        prepare(&conn).map_err(|err| match err {
+            IndexError::Sql { source, .. } if is_not_a_database(&source) => {
+                IndexError::NotADatabase {
+                    path: path.to_path_buf(),
+                }
+            }
+            other => other,
+        })?;
         Ok(Index {
             conn,
             path: path.to_path_buf(),
@@ -348,6 +362,7 @@ impl Index {
                     sql(
                         "upsert",
                         stmt.execute(rusqlite::params![
+                            path_key(&entry.path),
                             entry.path.to_string_lossy(),
                             kind_str(entry.kind),
                             entry.mtime_ns,
@@ -362,10 +377,7 @@ impl Index {
                     // 開き直した冊の表紙は古い（`covers` は p0-2c が埋める。設計 §2.2）
                     sql(
                         "cover",
-                        tx.execute(
-                            DELETE_COVER,
-                            rusqlite::params![entry.path.to_string_lossy()],
-                        ),
+                        tx.execute(DELETE_COVER, rusqlite::params![path_key(&entry.path)]),
                     )?;
                 }
             }
@@ -404,6 +416,14 @@ impl Index {
         }
         Ok(map)
     }
+}
+
+/// SQLite のファイルではない（中身が別物）ときの失敗か。
+fn is_not_a_database(err: &rusqlite::Error) -> bool {
+    matches!(
+        err,
+        rusqlite::Error::SqliteFailure(e, _) if e.code == rusqlite::ErrorCode::NotADatabase
+    )
 }
 
 /// スキーマを準備する。`user_version` が合わなければ捨てて作り直す（設計 §2.2）。
@@ -476,7 +496,8 @@ fn sql<T>(label: &'static str, result: rusqlite::Result<T>) -> Result<T, IndexEr
 }
 
 /// 差分索引の鍵に使う path の形。Windows は大文字小文字を区別しないので、
-/// 区切りを `/` に揃えて小文字化しておく。DB に stored する文字列はこの変換前。
+/// 区切りを `/` に揃えて小文字化しておく。DB の `key` 列（UNIQUE）にこの形を入れ、
+/// `path` 列には変換前の綴りを入れる（綴り違いのルートでも行が重ならない）。
 fn path_key(path: &Path) -> String {
     let slashes = path.to_string_lossy().replace('\\', "/");
     let trimmed = slashes.trim_end_matches('/').to_lowercase();
