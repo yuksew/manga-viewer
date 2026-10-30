@@ -63,6 +63,12 @@ pub fn execute(root: Option<PathBuf>, db: &Path, command: &Command) -> anyhow::R
                 );
             }
         }
+        Command::Serve { port } => {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", *port))?;
+            println!("listening\thttp://{}/", listener.local_addr()?);
+            std::io::Write::flush(&mut std::io::stdout())?;
+            crate::server::serve(listener, db.to_path_buf(), root);
+        }
         Command::List => {
             let index = Index::open(db)?;
             for row in index.books()? {
@@ -121,6 +127,12 @@ pub enum Command {
     },
     /// 索引 DB の中身を出す（TSV: id / title / kind / page_count / status / path）
     List,
+    /// 索引の冊をブラウザで読めるようにする（127.0.0.1 のみ。`--root` で冊を絞れる）
+    Serve {
+        /// 待ち受けポート（0 なら空きポート）
+        #[arg(long, default_value_t = 7878)]
+        port: u16,
+    },
 }
 
 /// 引数なし起動（設計 §3.3 の GUI。p0-3a まで未実装なので案内だけ出す）。
