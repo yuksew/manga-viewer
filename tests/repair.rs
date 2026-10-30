@@ -215,3 +215,71 @@ fn serve_marks_repaired_pages_with_header() {
     assert_eq!(r.status, 422);
     assert_eq!(header(&r, "X-MV-Repaired"), None);
 }
+
+/// 既知の欠陥（p0-8b 所見 F1）: 後ろの `FFD9` から試すので、ゴミが `FFD9` を含むと切り位置が真の終端より後ろになる。
+/// 画素は正しいので表示には影響しないが、serve が返す本体にゴミが一部残る。
+#[test]
+#[ignore = "p0-8b F1: 後ろから試す順のため len が真の終端より後ろになる"]
+fn jpeg_garbage_containing_eoi_bytes_is_still_cut_at_true_end() {
+    let good = big_jpeg();
+    let mut bad = good.clone();
+    for _ in 0..3 {
+        bad.extend_from_slice(b"junk\xFF\xD9junk");
+    }
+    let d = decode_rgba(&bad).unwrap();
+    assert_eq!(d.repair, Some(Repair::TrailingGarbage { len: good.len() }));
+}
+
+#[test]
+fn png_garbage_containing_iend_is_still_cut_at_true_end() {
+    let good = small_png();
+    let mut bad = good.clone();
+    for _ in 0..3 {
+        bad.extend_from_slice(b"junkIENDjunkjunk");
+    }
+    let d = decode_rgba(&bad).unwrap();
+    assert_eq!(d.repair, Some(Repair::TrailingGarbage { len: good.len() }));
+}
+
+#[test]
+fn unrepairable_error_is_the_strict_decode_error() {
+    let good = big_jpeg();
+    let sof = good.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
+    let mut bad = good.clone();
+    bad[sof + 1] = 0x01;
+    assert!(matches!(decode_rgba(&bad), Err(DecodeError::Invalid(_))));
+}
+
+/// ゴミに `FFD9` が混じっても、画素は欠けず `TrailingGarbage` として復号できる（F1 の長さ以外の保証）。
+#[test]
+fn jpeg_garbage_containing_eoi_bytes_still_decodes_same_pixels() {
+    let good = big_jpeg();
+    let mut bad = good.clone();
+    for _ in 0..3 {
+        bad.extend_from_slice(b"junk\xFF\xD9junk");
+    }
+    let d = decode_rgba(&bad).unwrap();
+    assert!(matches!(d.repair, Some(Repair::TrailingGarbage { .. })));
+    assert_eq!(d.rgba, decode_rgba(&good).unwrap().rgba);
+}
+
+/// p0-8b 変異 M3c: 注記文言の取り違え（切れ ↔ 余分な末尾）を検出する。
+#[test]
+fn view_note_text_matches_repair_kind() {
+    let good = big_jpeg();
+    let mut garbage = good.clone();
+    garbage.extend_from_slice(b"tail junk");
+    let cut = good[..good.len() - 30].to_vec();
+    let dir = TmpDir::new("repair-note-text");
+    let zip = dir.0.join("b.zip");
+    write_zip_data(&zip, &[("1.jpg", &garbage), ("2.jpg", &cut)]);
+    let book = Book::open(&zip, BookKind::Zip).unwrap();
+    let mut app = ViewApp::new("t".into(), book, 0, None);
+
+    let text = frame_text(&mut app, None);
+    assert!(text.contains("余分なデータ"), "{text}");
+    assert!(!text.contains("途中で切れて"), "{text}");
+    let text = frame_text(&mut app, Some(egui::Key::ArrowRight));
+    assert!(text.contains("途中で切れて"), "{text}");
+    assert!(!text.contains("余分なデータ"), "{text}");
+}
