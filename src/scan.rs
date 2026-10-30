@@ -11,6 +11,27 @@ pub enum BookKind {
     Folder,
 }
 
+impl BookKind {
+    /// DB の `kind` に書く文字列（設計 §2.2）。
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BookKind::Zip => "zip",
+            BookKind::Folder => "folder",
+        }
+    }
+
+    /// DB から読み戻す。知りでない値は `None`（呼び手は壊れた行として扱う）。
+    #[must_use]
+    pub fn parse(s: &str) -> Option<BookKind> {
+        match s {
+            "zip" => Some(BookKind::Zip),
+            "folder" => Some(BookKind::Folder),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BookEntry {
     pub path: PathBuf,

@@ -1,40 +1,33 @@
-use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
-use manga_viewer::book::Book;
-use manga_viewer::scan::scan_root;
+use clap::Parser;
+use manga_viewer::cli::{self, Cli};
 
-#[derive(Parser)]
-#[command(name = "manga-viewer")]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
-}
-
-#[derive(Subcommand)]
-enum Command {
-    /// ルートを走査して冊数と頁数の要約を出す
-    Index { root: PathBuf },
-}
-
-fn main() -> anyhow::Result<()> {
-    match Cli::parse().command {
-        Command::Index { root } => index(&root),
-    }
-}
-
-fn index(root: &Path) -> anyhow::Result<()> {
-    let books = scan_root(root)?;
-    let (mut pages, mut broken) = (0usize, 0usize);
-    for b in &books {
-        match Book::open(&b.path, b.kind) {
-            Ok(book) => pages += book.page_count(),
-            Err(e) => {
-                broken += 1;
-                eprintln!("broken\t{}\t{e}", b.path.display());
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    match dispatch(&cli) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("エラー: {err}");
+            for cause in err.chain().skip(1) {
+                eprintln!("  理由: {cause}");
             }
+            ExitCode::FAILURE
         }
     }
-    println!("books={} pages={pages} broken={broken}", books.len());
-    Ok(())
+}
+
+fn dispatch(cli: &Cli) -> anyhow::Result<()> {
+    match &cli.command {
+        Some(command) => cli::run(cli.root.clone(), cli.db.clone(), command),
+        // 設計 §3.3 の引数なし = GUI。p0-3a まで未実装なので案内を出す
+        None => {
+            let db = match &cli.db {
+                Some(path) => path.clone(),
+                None => manga_viewer::index::default_db_path()?,
+            };
+            cli::gui_stub(cli.root.as_deref(), &db);
+            Ok(())
+        }
+    }
 }
