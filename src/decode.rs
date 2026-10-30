@@ -122,7 +122,12 @@ pub fn decode_rgba(bytes: &[u8]) -> Result<Decoded, DecodeError> {
     Err(strict_err)
 }
 
-/// 終端マーカー（JPEG: `FFD9`、PNG: `IEND` チャンク末尾）の直後で切る長さの候補。後ろから最大 16 個。
+/// 終端マーカー（JPEG: `FFD9`、PNG: `IEND` チャンク末尾）の直後で切る長さの候補。前から最大 16 個。
+///
+/// 前から試す理由（p0-8c / 所見 F1）: 真の終端より後ろにあるのは末尾ゴミだけなので、最初に
+/// strict 復号が通る位置を採ればゴミ中のマーカーに引きずられない。JPEG の走査データ内に
+/// `FFD9` は現れない（`FF` は `FF00`/RSTn にスタッフされる）ため、前方の偽の候補は EXIF
+/// サムネイル等のヘッダ内だけで、そこで切った本体は strict 検証で落ちる（試行が数回増えるだけ）。
 fn end_candidates(kind: Kind, b: &[u8]) -> Vec<usize> {
     const MAX: usize = 16;
     let (marker, extra): (&[u8], usize) = match kind {
@@ -132,7 +137,6 @@ fn end_candidates(kind: Kind, b: &[u8]) -> Vec<usize> {
     };
     b.windows(marker.len())
         .enumerate()
-        .rev()
         .filter(|(_, w)| *w == marker)
         .map(|(i, _)| i + extra)
         .filter(|&end| end < b.len()) // 全長で切るのは元と同じなので除く

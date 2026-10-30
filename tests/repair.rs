@@ -219,7 +219,6 @@ fn serve_marks_repaired_pages_with_header() {
 /// 既知の欠陥（p0-8b 所見 F1）: 後ろの `FFD9` から試すので、ゴミが `FFD9` を含むと切り位置が真の終端より後ろになる。
 /// 画素は正しいので表示には影響しないが、serve が返す本体にゴミが一部残る。
 #[test]
-#[ignore = "p0-8b F1: 後ろから試す順のため len が真の終端より後ろになる"]
 fn jpeg_garbage_containing_eoi_bytes_is_still_cut_at_true_end() {
     let good = big_jpeg();
     let mut bad = good.clone();
@@ -282,4 +281,51 @@ fn view_note_text_matches_repair_kind() {
     let text = frame_text(&mut app, Some(egui::Key::ArrowRight));
     assert!(text.contains("途中で切れて"), "{text}");
     assert!(!text.contains("余分なデータ"), "{text}");
+}
+
+/// F1 修正後: serve の応答本体からもゴミが消え、元の本体と完全一致する（ヘッダは据え置き）。
+#[test]
+fn serve_body_has_garbage_removed_when_garbage_contains_eoi() {
+    use manga_viewer::index::Index;
+    use manga_viewer::server::handle;
+
+    let good = big_jpeg();
+    let mut bad = good.clone();
+    for _ in 0..3 {
+        bad.extend_from_slice(b"junk\xFF\xD9junk");
+    }
+    let t = TmpDir::new("repair-srv-f1");
+    let root = t.0.join("books");
+    write_zip_data(&root.join("a.zip"), &[("1.jpg", &bad)]);
+    let mut index = Index::open(&t.0.join("db/index.db")).unwrap();
+    index.reindex(&root).unwrap();
+    let id = index.books().unwrap()[0].id;
+    let r = handle(
+        &index,
+        None,
+        &format!("GET /page/{id}/0 HTTP/1.1\r\nHost: x\r\n\r\n"),
+    );
+    assert_eq!(r.status, 200);
+    assert_eq!(header(&r, "X-MV-Repaired"), Some("trailing-garbage"));
+    assert_eq!(r.body, good);
+}
+
+/// 順序の固定: ヘッダ内（APP15 の中身）に `FFD9` があっても、そこでは切らず真の終端で切る。
+#[test]
+fn jpeg_eoi_bytes_inside_header_segment_do_not_win() {
+    let good = big_jpeg();
+    let payload = b"thumb\xFF\xD9end";
+    let seg_len = (payload.len() + 2) as u16;
+    let mut with_seg = good[..2].to_vec();
+    with_seg.extend_from_slice(&[0xFF, 0xEF]);
+    with_seg.extend_from_slice(&seg_len.to_be_bytes());
+    with_seg.extend_from_slice(payload);
+    with_seg.extend_from_slice(&good[2..]);
+    let mut bad = with_seg.clone();
+    bad.extend_from_slice(b"trailing junk");
+    let d = decode_rgba(&bad).unwrap();
+    assert_eq!(
+        d.repair,
+        Some(Repair::TrailingGarbage { len: with_seg.len() })
+    );
 }
