@@ -94,3 +94,25 @@ pub fn webp_bytes() -> Vec<u8> {
     v.extend(payload);
     v
 }
+
+/// 実際に符号化した 3x2 画像（`image` クレート）。復号まで通る本物のバイト列。
+fn encode_real(format: image::ImageFormat) -> Vec<u8> {
+    let img = image::RgbImage::from_pixel(3, 2, image::Rgb([10, 120, 240]));
+    let mut buf = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut buf, format)
+        .unwrap();
+    buf.into_inner()
+}
+
+pub fn real_jpeg_bytes() -> Vec<u8> {
+    encode_real(image::ImageFormat::Jpeg)
+}
+
+pub fn real_gif_bytes() -> Vec<u8> {
+    encode_real(image::ImageFormat::Gif)
+}
+
+pub fn real_webp_bytes() -> Vec<u8> {
+    encode_real(image::ImageFormat::WebP)
+}

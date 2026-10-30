@@ -1,8 +1,11 @@
-//! 画像ヘッダ検証（p0-4）の試験。壊れた画像は 404、正常画像は 200 + 正しい Content-Type。合成データのみ。
+//! 画像ヘッダ検証（p0-4）の試験。壊れた画像は 422、正常画像は 200 + 正しい Content-Type。合成データのみ。
 
 mod common;
 
-use common::{TmpDir, gif_bytes, jpeg_bytes, png_bytes, webp_bytes, write_zip_data};
+use common::{
+    TmpDir, gif_bytes, jpeg_bytes, png_bytes, real_gif_bytes, real_jpeg_bytes, real_webp_bytes,
+    webp_bytes, write_zip_data,
+};
 use manga_viewer::imgcheck::{self, Kind};
 use manga_viewer::index::Index;
 use manga_viewer::server::{self, handle};
@@ -91,7 +94,13 @@ fn id_of(index: &Index, title: &str) -> i64 {
 fn per_page_verdicts_across_two_books() {
     let t = TmpDir::new("p0-4");
     let root = t.0.join("books");
-    let (png, jpg, gif, webp) = (png_bytes(), jpeg_bytes(), gif_bytes(), webp_bytes());
+    // サーバは実復号するので、配信される側は本物の符号化済みバイトを使う
+    let (png, jpg, gif, webp) = (
+        png_bytes(),
+        real_jpeg_bytes(),
+        real_gif_bytes(),
+        real_webp_bytes(),
+    );
     let (png_cut, jpg_cut) = (truncated(png.clone(), 5), truncated(jpg.clone(), 2));
     let gif_cut = truncated(gif.clone(), 1);
     let webp_cut = truncated(webp.clone(), 3);
@@ -138,9 +147,9 @@ fn per_page_verdicts_across_two_books() {
                     assert_eq!(&r.body, *body, "/{route}/{id}/{n}");
                 }
                 None => {
-                    assert_eq!(r.status, 404, "/{route}/{id}/{n}");
+                    assert_eq!(r.status, 422, "/{route}/{id}/{n}");
                     assert!(r.content_type.starts_with("text/html"));
-                    assert!(String::from_utf8_lossy(&r.body).contains("壊れた画像"));
+                    assert!(String::from_utf8_lossy(&r.body).contains("この頁は表示できません"));
                 }
             }
         }
@@ -153,7 +162,7 @@ fn image_route_is_inline_and_page_route_is_not() {
     let root = t.0.join("books");
     write_zip_data(
         &root.join("a.zip"),
-        &[("1.png", &png_bytes()), ("2.jpg", &jpeg_bytes())],
+        &[("1.png", &png_bytes()), ("2.jpg", &real_jpeg_bytes())],
     );
     let mut index = Index::open(&t.0.join("db/index.db")).unwrap();
     index.reindex(&root).unwrap();
@@ -259,4 +268,34 @@ fn png_ihdr_length_other_than_13_is_rejected() {
     p[8..12].copy_from_slice(&14u32.to_be_bytes());
     p.insert(29, 0);
     assert!(imgcheck::check(&p).is_err());
+}
+
+#[test]
+fn body_corrupt_image_is_422_with_view_wording() {
+    // 署名・終端は正しいが IDAT だけ壊れた PNG: imgcheck は通るが復号できない（view と同じ結果になること）
+    let mut png = png_bytes();
+    let idat = png.windows(4).position(|w| w == b"IDAT").unwrap() + 4;
+    for b in &mut png[idat..idat + 6] {
+        *b = 0xAB;
+    }
+    assert!(manga_viewer::imgcheck::check(&png).is_ok());
+    let t = TmpDir::new("p0-7c-corrupt");
+    let root = t.0.join("books");
+    write_zip_data(&root.join("a.zip"), &[("1.png", &png)]);
+    let mut index = Index::open(&t.0.join("db/index.db")).unwrap();
+    index.reindex(&root).unwrap();
+    let a = id_of(&index, "a");
+    for route in ["page", "image"] {
+        let r = get(&index, &format!("/{route}/{a}/0"));
+        assert_eq!(r.status, 422, "{route}");
+        let body = String::from_utf8_lossy(&r.body).into_owned();
+        assert!(
+            body.contains("この頁は表示できません: 復号できません"),
+            "{body}"
+        );
+        assert!(
+            r.to_bytes()
+                .starts_with(b"HTTP/1.0 422 Unprocessable Entity")
+        );
+    }
 }

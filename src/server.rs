@@ -2,8 +2,10 @@
 //!
 //! * `GET /` — 冊の一覧（索引の自然順）
 //! * `GET /book/<id>[?p=N]` — N 頁目（既定 0）を `<img>` で出す。prev/next と「N/M ページ」つき
-//! * `GET /page/<id>/<n>` — 画像バイト（`imgcheck` で検証済み。Content-Type は magic から）
+//! * `GET /page/<id>/<n>` — 画像バイト（`decode` で実復号して検証済み。壊れていれば 422。Content-Type は magic から）
 //! * `GET /image/<id>/<n>` — 同じ画像を `Content-Disposition: inline` つきで（ブラウザ直表示用）
+//!
+//! **デバッグ専用**（P0 の最終形は `view`）。view との差の扱いは docs/p0-6-design-options.md §6。
 //!
 //! 画像のパスは URL から組まず、索引の path と `Book` の頁一覧だけから決める。
 //! 応答は `Connection: close`（HTTP/1.0 流儀）で、接続ごとに 1 スレッド。
@@ -14,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::book::Book;
-use crate::imgcheck;
+use crate::decode;
 use crate::index::{BookRow, Index, Status};
 
 /// リクエストヘッダの上限（これを超えたら読むのをやめる）。
@@ -82,6 +84,7 @@ fn reason(status: u16) -> &'static str {
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        422 => "Unprocessable Entity",
         _ => "Internal Server Error",
     }
 }
@@ -281,9 +284,15 @@ fn image(
         Ok(body) => body,
         Err(e) => return Ok(Response::error(404, &format!("頁を読めません: {e}"))),
     };
-    let kind = match imgcheck::check(&body) {
-        Ok(kind) => kind,
-        Err(why) => return Ok(Response::error(404, &format!("壊れた画像です: {why}"))),
+    // view と同じ検証（imgcheck + 実復号）を通し、文言も揃える。壊れていれば 422。
+    let kind = match decode::decode_rgba(&body) {
+        Ok(decoded) => decoded.kind,
+        Err(e) => {
+            return Ok(Response::error(
+                422,
+                &format!("この頁は表示できません: {e}"),
+            ));
+        }
     };
     let mut headers = vec![("X-Content-Type-Options", "nosniff".to_string())];
     if inline {
