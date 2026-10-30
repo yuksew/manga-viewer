@@ -2,6 +2,7 @@
 //!
 //! * `manga-viewer index <root> [--db <path>]` — 走査して索引 DB に反映し、件数と所要を出す
 //! * `manga-viewer list [--db <path>]` — 索引 DB の中身を TSV で出す
+//! * `manga-viewer view [--book ID] [--page N]` — 単独ウィンドウで 1 冊を読む（p0-6b）
 //! * 引数なし — GUI（p0-3a）。今は案内を出すだけ
 //!
 //! ルートは位置引数のほか `--root` でも書ける（設計 §3.3 の形）。両方あれば位置引数が勝つ。
@@ -69,6 +70,19 @@ pub fn execute(root: Option<PathBuf>, db: &Path, command: &Command) -> anyhow::R
             std::io::Write::flush(&mut std::io::stdout())?;
             crate::server::serve(listener, db.to_path_buf(), root);
         }
+        Command::View {
+            book,
+            page,
+            exit_after_ms,
+        } => {
+            let (title, book) = crate::view::open_from_index(db, root.as_deref(), *book)?;
+            crate::view::run(
+                title,
+                book,
+                *page,
+                exit_after_ms.map(std::time::Duration::from_millis),
+            )?;
+        }
         Command::List => {
             let index = Index::open(db)?;
             for row in index.books()? {
@@ -127,6 +141,18 @@ pub enum Command {
     },
     /// 索引 DB の中身を出す（TSV: id / title / kind / page_count / status / path）
     List,
+    /// 索引の冊を単独ウィンドウで読む（←/→ で頁送り、Esc で終了）
+    View {
+        /// 冊の id（`list` の先頭列。省略なら最初の壊れていない冊）
+        #[arg(long, value_name = "ID")]
+        book: Option<i64>,
+        /// 開く頁（0 始まり。`serve` の `?p=` と同じ）
+        #[arg(long, default_value_t = 0)]
+        page: usize,
+        /// 指定ミリ秒で自動的に閉じる（生存確認用）
+        #[arg(long, value_name = "MS", hide = true)]
+        exit_after_ms: Option<u64>,
+    },
     /// 索引の冊をブラウザで読めるようにする（127.0.0.1 のみ。`--root` で冊を絞れる）
     Serve {
         /// 待ち受けポート（0 なら空きポート）
