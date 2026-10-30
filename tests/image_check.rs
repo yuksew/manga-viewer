@@ -200,3 +200,63 @@ fn content_type_follows_magic_not_extension() {
     let r = get(&index, &format!("/page/{a}/0"));
     assert_eq!((r.status, r.content_type), (200, "image/png"));
 }
+
+// ---- p0-4fix: 監査（p0-4）で生き残った変異 M05/M07/M09/M11/M17 を固定する試験 ----
+
+/// M05: WebP は `RIFF` で始まらなければならない（`RIFX` 始まりは拒否）。
+#[test]
+fn webp_requires_riff_magic() {
+    let mut w = webp_bytes();
+    assert_eq!(imgcheck::check(&w), Ok(Kind::Webp));
+    w[..4].copy_from_slice(b"RIFX");
+    assert!(imgcheck::check(&w).is_err());
+}
+
+/// M07: JPEG の magic は先頭に限る。本体に `FF D8` を含む正常な GIF/WebP を JPEG と誤判定しない。
+#[test]
+fn ffd8_inside_body_does_not_make_a_jpeg() {
+    // GIF: 画像データ（トレーラ 3B の手前）に FF D8
+    let mut g = gif_bytes();
+    let at = g.len() - 1;
+    g.splice(at..at, [0xFF, 0xD8]);
+    assert_eq!(imgcheck::check(&g), Ok(Kind::Gif));
+    // WebP: ペイロード末尾に FF D8（RIFF・チャンク長も 2 バイト分広げる）
+    let mut w = webp_bytes();
+    w.extend([0xFF, 0xD8]);
+    let riff = u32::from_le_bytes(w[4..8].try_into().unwrap()) + 2;
+    w[4..8].copy_from_slice(&riff.to_le_bytes());
+    let chunk = u32::from_le_bytes(w[16..20].try_into().unwrap()) + 2;
+    w[16..20].copy_from_slice(&chunk.to_le_bytes());
+    assert_eq!(imgcheck::check(&w), Ok(Kind::Webp));
+}
+
+/// M09: GIF は 13 バイトでは成立しない。13 バイトで末尾が `3B` のものも拒否する
+/// （最小 GIF の 13 バイト接頭辞は末尾が 0 なので、全長の切り詰め試験では漏れる）。
+#[test]
+fn gif_of_13_bytes_ending_in_trailer_is_rejected() {
+    let mut g = gif_bytes()[..12].to_vec();
+    g.push(0x3B);
+    assert_eq!(g.len(), 13);
+    assert!(imgcheck::check(&g).is_err());
+}
+
+/// M11: WebP のチャンク長が RIFF の範囲を 1 バイトでも超えれば拒否する。
+#[test]
+fn webp_chunk_overrunning_riff_by_one_byte_is_rejected() {
+    let mut w = webp_bytes();
+    let chunk = u32::from_le_bytes(w[16..20].try_into().unwrap());
+    w[16..20].copy_from_slice(&(chunk + 1).to_le_bytes());
+    assert!(imgcheck::check(&w).is_err());
+    // 境界ちょうど（チャンク長 = 実ペイロード長）は通る
+    w[16..20].copy_from_slice(&chunk.to_le_bytes());
+    assert_eq!(imgcheck::check(&w), Ok(Kind::Webp));
+}
+
+/// M17: PNG の IHDR 長さは 13 固定。14 にして本体を 1 バイト足し、後続チャンクの並びは保ったまま拒否を見る。
+#[test]
+fn png_ihdr_length_other_than_13_is_rejected() {
+    let mut p = png_bytes();
+    p[8..12].copy_from_slice(&14u32.to_be_bytes());
+    p.insert(29, 0);
+    assert!(imgcheck::check(&p).is_err());
+}
