@@ -3,7 +3,7 @@
 対象: branch `qwen-p0`、commit **26b6b8c**（HEAD と一致）。作業者の申告は使わず、すべて再測した。
 漫画ファイル（`D:\books`・`D:\torrent`）には触れていない。合成データは `tests/.tmp/p0-4-audit/`（gitignore 済み）。
 
-## 判定: **条件つきで使える**
+## 判定: **条件つきで使える** → 再監査（commit e3d5360）で **合格** に更新（末尾「再監査」節）
 
 HEAD の挙動に誤りは見つからなかった。serve 実走は 26 経路すべて期待どおりで、2 冊の for ループ trap も無い。
 条件を付けるのは、**テストが imgcheck の境界・アンカー条件の一部を固定していない**ため。
@@ -116,3 +116,43 @@ serve 実走の 2 冊が不連続な壊れ位置を持つ。
 
 変異適用後はすべて `git checkout` で原状復帰。プローブ用の `tests/zz_probe.rs` は削除済み。
 最終の `git status` は clean（監査成果物は gitignore 済みの `tests/.tmp/` と、この docs のみ）。
+
+---
+
+# 再監査 — p0-4fix（commit e3d5360）
+
+作業者の申告は使わず再測した。漫画実データ（`D:\books`・`D:\torrent`）には触れていない。
+e3d5360 は `tests/image_check.rs` と `docs/p0-4fix-implementation.md` のみの変更で、`src/` は無変更（`git show --stat` で確認）。
+
+## 判定: **合格**
+
+条件（生存変異 5 本の穴）は解除された。5 本とも、自分で適用した変異体に対し対応する新テストが 1 本ずつ落ちた。
+
+## 4 門（独立再測）
+
+| 門 | 結果 |
+|---|---|
+| `cargo fmt --check` | exit 0 |
+| `cargo clippy -q --all-targets` | exit 0（警告なし） |
+| `cargo build` | exit 0 |
+| `cargo test` | 全通過。**52 本** = lib 10 + image_check 11 + index_db 16 + scan_book 7 + server 8（main・doc は 0）。申告 52・image_check 11 と一致（47 → 52 で +5） |
+
+## 変異 5 本の再撃墜（自分の実行）
+
+ハーネス `tests/.tmp/reaudit/mut.py`（gitignore 済み）。`src/imgcheck.rs` に 1 本ずつ当て（置換前の出現数が 1 であることを assert）、
+`cargo test --test image_check` を実行し、`finally` で元のバイト列へ書き戻す。
+
+| # | 変異 | exit | 落ちた本数 | 落ちたテスト |
+|---|---|---|---|---|
+| M05 | dispatch から `&b[..4] == b"RIFF"` を削除 | 101 | 1 | `webp_requires_riff_magic` |
+| M07 | JPEG 判定を先頭限定から `windows(2).any` へ | 101 | 1 | `ffd8_inside_body_does_not_make_a_jpeg` |
+| M09 | GIF `len < 14` → `< 13` | 101 | 1 | `gif_of_13_bytes_ending_in_trailer_is_rejected` |
+| M11 | WebP `chunk + 20` → `+ 19` | 101 | 1 | `webp_chunk_overrunning_riff_by_one_byte_is_rejected` |
+| M17 | PNG `be32(b, 8) != Some(13)` を削除 | 101 | 1 | `png_ihdr_length_other_than_13_is_rejected` |
+
+**5/5 撃墜。** 作業者の報告表（各 1 本・同名のテスト）と一致。実行後 `git status` は clean、`git diff -- src` は空。
+これで imgcheck の非等価変異は、p0-4 時点の 17 本中 15 本が撃墜済み（残る M06・M08 は等価変異で、観測できる差が無い）。
+
+## 残る所見（軽微）
+- 今回は変異再撃墜が対象。p0-4 で行った serve 実走 26 経路の再走はしていない（`src/` 無変更のため結果は変わらない見込み）。
+- 圧縮データ内部・PNG CRC 未検証の限界は変わらず（実装メモに明記済み）。`docs/p0-status.md` で扱いを整理した。
