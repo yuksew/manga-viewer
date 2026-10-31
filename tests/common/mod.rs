@@ -116,3 +116,30 @@ pub fn real_gif_bytes() -> Vec<u8> {
 pub fn real_webp_bytes() -> Vec<u8> {
     encode_real(image::ImageFormat::WebP)
 }
+
+/// ディレクトリの一覧読みを Everyone に拒否する（読めない子ディレクトリの再現、#5）。
+/// Drop で拒否を外す（外さないと `TmpDir` が消せない）。
+pub struct DenyList(pub PathBuf);
+
+impl DenyList {
+    pub fn new(dir: &Path) -> DenyList {
+        let ok = std::process::Command::new("icacls")
+            .arg(dir)
+            .args(["/deny", "*S-1-1-0:(RD)"])
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "icacls /deny に失敗");
+        DenyList(dir.to_path_buf())
+    }
+}
+
+impl Drop for DenyList {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("icacls")
+            .arg(&self.0)
+            .args(["/remove:d", "*S-1-1-0"])
+            .output();
+    }
+}

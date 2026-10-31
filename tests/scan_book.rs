@@ -2,9 +2,9 @@ mod common;
 
 use std::collections::BTreeSet;
 
-use common::{TmpDir, write_folder, write_zip};
+use common::{DenyList, TmpDir, write_folder, write_zip};
 use manga_viewer::book::{Book, BookError};
-use manga_viewer::scan::{BookKind, scan_root};
+use manga_viewer::scan::{BookKind, scan_root, scan_root_full};
 
 fn titles(root: &std::path::Path) -> BTreeSet<String> {
     scan_root(root)
@@ -158,4 +158,31 @@ fn cli_index_summarizes() {
     assert!(out.status.success());
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("books=3 pages=3 broken=1"), "{s}");
+}
+
+/// #5: 読めない子ディレクトリは飛ばして走査を続け、飛ばしたことを理由つきで返す。
+#[test]
+fn unreadable_subdir_is_reported_not_silently_dropped() {
+    let t = TmpDir::new("scan-deny");
+    let r = &t.0;
+    write_zip(&r.join("ok/vol1.zip"), &["1.png"]);
+    write_zip(&r.join("locked/vol2.zip"), &["1.png"]);
+    let _deny = DenyList::new(&r.join("locked"));
+
+    let scan = scan_root_full(r).unwrap();
+    let got: Vec<_> = scan.books.iter().map(|b| b.title.as_str()).collect();
+    assert_eq!(got, ["vol1"]);
+    assert_eq!(scan.skipped.len(), 1);
+    assert_eq!(scan.skipped[0].path, r.join("locked"));
+    assert!(!scan.skipped[0].error.is_empty());
+    // 互換の scan_root は冊だけを返す
+    assert_eq!(scan_root(r).unwrap().len(), 1);
+}
+
+/// 読めない子ディレクトリが無ければ skipped は空。
+#[test]
+fn readable_tree_has_no_skipped() {
+    let t = TmpDir::new("scan-noskip");
+    write_zip(&t.0.join("a/v.zip"), &["1.png"]);
+    assert!(scan_root_full(&t.0).unwrap().skipped.is_empty());
 }

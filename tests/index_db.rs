@@ -8,7 +8,7 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use common::{TmpDir, write_folder, write_zip};
+use common::{DenyList, TmpDir, write_folder, write_zip};
 use manga_viewer::index::{Index, SCHEMA_VERSION, Status};
 
 fn open(t: &TmpDir) -> Index {
@@ -363,4 +363,32 @@ fn cli_list_shows_indexed_books_in_order() {
     let s = String::from_utf8_lossy(&out.stdout);
     let got: Vec<&str> = s.lines().map(|l| l.split('\t').nth(1).unwrap()).collect();
     assert_eq!(got, ["a", "b", "f"]);
+}
+
+/// #5: 再索引の時に読めなかった子ディレクトリの下の冊は「消えた」扱いにしない。
+#[test]
+fn books_under_unreadable_subdir_are_kept_and_reported() {
+    let t = TmpDir::new("idx-deny");
+    let root = t.0.join("root");
+    write_zip(&root.join("ok/vol1.zip"), &["1.png"]);
+    write_zip(&root.join("locked/vol2.zip"), &["1.png"]);
+    let mut index = open(&t);
+    let first = index.reindex(&root).unwrap();
+    assert_eq!(first.discovered, 2);
+    assert!(first.skipped.is_empty());
+
+    let deny = DenyList::new(&root.join("locked"));
+    let report = index.reindex(&root).unwrap();
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(report.skipped[0].path, root.join("locked"));
+    assert_eq!(report.removed, 0);
+    assert_eq!(titles(&index), ["vol1", "vol2"]);
+
+    // 読めるように戻した後、本当に消えた冊は従来どおり消える
+    drop(deny);
+    fs::remove_file(root.join("locked/vol2.zip")).unwrap();
+    let report = index.reindex(&root).unwrap();
+    assert!(report.skipped.is_empty());
+    assert_eq!(report.removed, 1);
+    assert_eq!(titles(&index), ["vol1"]);
 }

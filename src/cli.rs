@@ -46,7 +46,7 @@ pub fn execute(root: Option<PathBuf>, db: &Path, command: &Command) -> anyhow::R
             println!("db\t{}", db.display());
             println!("books={} pages={} broken={}", rows.len(), pages, broken);
             println!(
-                "discovered={} added={} updated={} unchanged={} removed={} broken={} rescanned={} elapsed_ms={}",
+                "discovered={} added={} updated={} unchanged={} removed={} broken={} rescanned={} skipped={} elapsed_ms={}",
                 report.discovered,
                 report.added,
                 report.updated,
@@ -54,8 +54,17 @@ pub fn execute(root: Option<PathBuf>, db: &Path, command: &Command) -> anyhow::R
                 report.removed,
                 report.broken,
                 report.rescanned(),
+                report.skipped.len(),
                 report.elapsed.as_millis(),
             );
+            // 読めずに飛ばした子ディレクトリは stderr に理由（#5: 冊が黙って欠けないように）
+            for skipped in &report.skipped {
+                eprintln!(
+                    "skipped	{}	{}",
+                    skipped.path.display(),
+                    flat(&skipped.error)
+                );
+            }
             // 壊れた冊は stderr に理由（設計 A-6: 一覧には出る、開けない）
             for row in rows.iter().filter(|row| row.status == Status::Broken) {
                 eprintln!(

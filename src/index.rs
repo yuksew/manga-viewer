@@ -18,7 +18,7 @@ use thiserror::Error;
 
 use crate::book::Book;
 use crate::natural::natural_cmp;
-use crate::scan::{self, BookEntry, BookKind};
+use crate::scan::{self, BookEntry, BookKind, Skipped};
 
 /// `PRAGMA user_version` の値。合わなければ DB を捨てて作り直す（設計 §2.2。移行は作らない）。
 pub const SCHEMA_VERSION: i64 = 2;
@@ -180,7 +180,7 @@ pub struct BookRow {
 }
 
 /// 1 回の索引がやったこと（`index` が件数と所要を出す。設計 §3.3）。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Report {
     /// 走査で見つけた冊数。
     pub discovered: usize,
@@ -194,6 +194,8 @@ pub struct Report {
     pub removed: usize,
     /// 索引後に broken だった冊数。
     pub broken: usize,
+    /// 走査で読めずに飛ばした子ディレクトリ（#5）。この下の既存の冊は消さずに残す。
+    pub skipped: Vec<Skipped>,
     /// 走査から書き込み完了までの実時間。
     pub elapsed: Duration,
 }
@@ -305,7 +307,8 @@ impl Index {
     ) -> Result<Report, IndexError> {
         let started = Instant::now();
         let root = absolute(root)?;
-        let mut found = scan::scan_root(&root)?;
+        let scan = scan::scan_root_full(&root)?;
+        let mut found = scan.books;
         if let Some(n) = limit {
             found.truncate(n);
         }
@@ -313,6 +316,7 @@ impl Index {
 
         let mut report = Report {
             discovered: found.len(),
+            skipped: scan.skipped,
             ..Report::default()
         };
         let mut fresh: Vec<&BookEntry> = Vec::new();
@@ -390,11 +394,17 @@ impl Index {
 
         // 消えた冊を消す。走査した root の下だけ（別の root が入った DB を巻かない）。
         // `limit` 付きのときはまだ見ていない冊があるので削除しない。
+        // 読めなかった子ディレクトリの下は「消えた」のか分からないので消さない（#5）。
         if limit.is_none() {
             let root_key = path_key(&root);
+            let skipped_keys: Vec<String> =
+                report.skipped.iter().map(|s| path_key(&s.path)).collect();
             let tx = sql("begin", self.conn.transaction())?;
             for (key, row) in &existing {
-                if alive.contains(key) || !under_root(key, &root_key) {
+                if alive.contains(key)
+                    || !under_root(key, &root_key)
+                    || skipped_keys.iter().any(|dir| under_root(key, dir))
+                {
                     continue;
                 }
                 sql("delete", tx.execute(DELETE_BOOK, rusqlite::params![row.id]))?;

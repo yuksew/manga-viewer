@@ -9,7 +9,7 @@ manga-viewer index <root>                 # root 以下を走査して索引 DB 
 manga-viewer view --book <id> [--page N]  # 索引の冊を単独ウィンドウで開く
 ```
 
-1. `index <root>` で冊を索引する（既定の root は `D:\books`）。索引 DB は既定で `%LOCALAPPDATA%\manga-viewer\index.db`。`--db <path>` か環境変数 `MANGA_VIEWER_DATA` で変えられる。
+1. `index <root>` で冊を索引する（既定の root は `D:\books`）。索引 DB は既定で `%LOCALAPPDATA%\manga-viewer\index.db`。`--db <path>` か環境変数 `MANGA_VIEWER_DATA` で変えられる。権限などで読めなかったフォルダは飛ばして続け、要約行の `skipped=N` と標準エラーの `skipped	<path>	<理由>` で知らせる（その下の登録済みの冊は消さずに残す）。
 2. `list` で冊の id を確かめる（TSV: id / title / kind / page_count / status / path）。
 3. `view --book <id>` で開く。`--book` を省略すると最初の壊れていない冊を開く。`--page N` は 0 始まりで、頁数以上なら最後の頁に丸める。
 4. 操作:
