@@ -212,6 +212,8 @@ impl Library {
         let out = area.show_rows(ui, CELL_H, n_rows, |ui, range| {
             for r in range {
                 ui.horizontal(|ui| {
+                    // 列数は CELL_W だけで割るので、マスの間に隙間を入れない（入れると右端の列が欠ける）
+                    ui.spacing_mut().item_spacing.x = 0.0;
                     for c in 0..cols {
                         let i = r * cols + c;
                         if i >= self.rows.len() {
