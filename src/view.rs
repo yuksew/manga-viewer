@@ -100,14 +100,32 @@ pub fn spread_active(want: bool, width: f32) -> bool {
     want && width >= SPREAD_MIN_WIDTH
 }
 
+/// `page` を含む表示の組（先頭頁, 末尾頁）。単頁なら `(page, page)`。
+/// 見開きは 1 枚目（索引 0）を表紙として 1 枚で出し、以降を索引 1-2, 3-4… で組む（多くの冊は 1 枚目が表紙）。
+/// 最終頁が組の相手を持たなければ 1 枚。
+#[must_use]
+pub fn spread_pages(page: usize, spread: bool, count: usize) -> (usize, usize) {
+    let last = count.saturating_sub(1);
+    let page = page.min(last);
+    if !spread || page == 0 {
+        return (page, page);
+    }
+    // 奇数索引が組の先頭（偶数索引は 1 つ前と組む）
+    let start = page - (page + 1) % 2;
+    (start, (start + 1).min(last))
+}
+
 /// 見開きの状態を窓内に出す文言（切替が効いたか・効かない理由を利用者に見せる）。
 #[must_use]
 pub fn mode_label(want: bool, width: f32, active: bool, page: usize, count: usize) -> String {
+    let (start, end) = spread_pages(page, active, count);
     if !want {
         "単頁（F で見開き）".to_string()
     } else if !active {
         format!("単頁（窓幅 {width:.0} が {SPREAD_MIN_WIDTH:.0} 未満のため見開きにできません）")
-    } else if page + 1 >= count {
+    } else if start == end && start == 0 && count > 1 {
+        "見開き（表紙は 1 枚）".to_string()
+    } else if start == end {
         "見開き（最終頁は 1 枚）".to_string()
     } else {
         "見開き（F で単頁）".to_string()
@@ -118,8 +136,9 @@ pub fn mode_label(want: bool, width: f32, active: bool, page: usize, count: usiz
 #[must_use]
 pub fn prefetch_plan(page: usize, spread: bool, count: usize) -> Vec<usize> {
     let span = if spread { 2 } else { 1 };
-    let next = (page + span..page + span * 3).filter(|&i| i < count);
-    let prev = (page.saturating_sub(span * 2)..page).rev();
+    let (start, end) = spread_pages(page, spread, count);
+    let next = (end + 1..end + 1 + span * 2).filter(|&i| i < count);
+    let prev = (start.saturating_sub(span * 2)..start).rev();
     next.chain(prev).collect()
 }
 
@@ -223,22 +242,29 @@ pub enum Nav {
     Prompt(NavDir),
 }
 
-/// 先頭側の頁 `page` から `delta` 回送る。見開きは 1 回 2 頁。
-/// 見開きは右綴じ（右半分が `page`=偶数索引、左半分が `page+1`=奇数索引）なので、
-/// 最終頁判定は右側の頁 `page`（偶数索引）ではなく見開きの末尾 `page+1`（左側）で行い、
-/// 最初頁判定は `page == 0`（右側の頁）で行う。端の意味は単頁時と変わらない。
+/// 先頭側の頁 `page` から `delta` 回送る。見開きは 1 回 1 組（[`spread_pages`] の組、表紙だけは 1 枚）。
+/// 最終頁判定は今の組の末尾（右綴じなので左側の頁）、最初頁判定は組の先頭が 0 か。端の意味は単頁時と変わらない。
+/// 端を越えるのは今いる組が端のときだけで、複数回の送りが途中で端に着いたらそこで止まる。
 #[must_use]
 pub fn plan_nav(page: usize, delta: isize, spread: bool, count: usize) -> Nav {
     let last = count.saturating_sub(1);
-    let right = if spread { page + 1 } else { page };
-    if delta > 0 && right >= last {
-        Nav::Prompt(NavDir::Next)
-    } else if delta < 0 && page == 0 {
-        Nav::Prompt(NavDir::Prev)
-    } else {
-        let span = if spread { 2 } else { 1 };
-        Nav::Page(step(page, delta * span, count))
+    let (mut start, mut end) = spread_pages(page, spread, count);
+    if delta > 0 && end >= last {
+        return Nav::Prompt(NavDir::Next);
     }
+    if delta < 0 && start == 0 {
+        return Nav::Prompt(NavDir::Prev);
+    }
+    for _ in 0..delta.unsigned_abs() {
+        (start, end) = if delta > 0 && end < last {
+            spread_pages(end + 1, spread, count)
+        } else if delta < 0 && start > 0 {
+            spread_pages(start - 1, spread, count)
+        } else {
+            break;
+        };
+    }
+    Nav::Page(start)
 }
 
 /// 索引から並び順の一覧を読む（開けなければ `None` でフォルダ順に落ちる）。
@@ -698,10 +724,9 @@ impl ViewApp {
         self.ensure_loaded(ctx, spread);
         self.drew_pages = true;
 
-        let label = if spread && self.page + 1 < count {
-            format!("{}-{}/{}", self.page + 1, self.page + 2, count)
-        } else {
-            format!("{}/{}", self.page + 1, count)
+        let label = match (self.visible.first(), self.visible.last()) {
+            (Some(a), Some(b)) if a != b => format!("{}-{}/{}", a + 1, b + 1, count),
+            _ => format!("{}/{}", self.page + 1, count),
         };
         let mode = mode_label(self.spread, width, spread, self.page, count);
         ui.label(format!("{label}  [{mode}]"));
@@ -723,11 +748,17 @@ impl ViewApp {
                 }
                 continue;
             };
-            // 右綴じ: 見開きは visible=[page, page+1] の page（1ページ目）を右半分、page+1 を左半分に置く
+            // 右綴じ: 見開きは visible=[page, page+1] の page（1ページ目）を右半分、page+1 を左半分に置く。
+            // 2 頁は窓の中央で接するよう、右の頁は半分の左端へ、左の頁は半分の右端へ寄せる
             let k = if n == 2 { 1 - k } else { k };
             let min = area.min + egui::vec2(w * k as f32, 0.0);
             let rect = egui::Rect::from_min_size(min, egui::vec2(w, area.height()));
-            draw_slot(ui, rect, slot);
+            let align = match (n, k) {
+                (2, 0) => egui::Align::Max,
+                (2, _) => egui::Align::Min,
+                _ => egui::Align::Center,
+            };
+            draw_slot(ui, rect, slot, align);
         }
     }
 
@@ -812,12 +843,10 @@ impl ViewApp {
             self.generation += 1;
         }
         let target = self.decoded_for;
-        let upto = if spread {
-            (self.page + 1).min(count - 1)
-        } else {
-            self.page
-        };
-        self.visible = (self.page..=upto).collect();
+        // 見開きでは組の先頭に揃える（単頁から F で切り替えたときなど）
+        let (start, end) = spread_pages(self.page, spread, count);
+        self.page = start;
+        self.visible = (start..=end).collect();
         // 表紙を仮表示している先頭頁は待たずに裏で復号し、届いたフレームで差し替える
         if self.page != 0 {
             self.placeholder = None;
@@ -949,8 +978,8 @@ fn draw_placeholder(ui: &egui::Ui, area: egui::Rect, tex: &egui::TextureHandle) 
     ui.painter().image(tex.id(), rect, uv, egui::Color32::WHITE);
 }
 
-/// 1 頁分を `area` の中に収めて描く（エラー/修復の注記は上、画像は残りの中央）。
-fn draw_slot(ui: &mut egui::Ui, area: egui::Rect, slot: &Slot) {
+/// 1 頁分を `area` の中に収めて描く（エラー/修復の注記は上、画像は残りの縦中央・横は `align` 寄せ）。
+fn draw_slot(ui: &mut egui::Ui, area: egui::Rect, slot: &Slot, align: egui::Align) {
     ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
         if let Some(msg) = &slot.error {
             ui.colored_label(
@@ -966,11 +995,35 @@ fn draw_slot(ui: &mut egui::Ui, area: egui::Rect, slot: &Slot) {
             let scale = (avail.width() / size.x)
                 .min(avail.height() / size.y)
                 .min(1.0);
-            let rect = egui::Rect::from_center_size(avail.center(), size * scale);
+            let rect = egui::Align2([align, egui::Align::Center])
+                .align_size_within_rect(size * scale, avail);
             let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
             ui.painter().image(tex.id(), rect, uv, egui::Color32::WHITE);
         }
     });
+}
+
+/// 開発用: `MV_SCREENSHOT=<フォルダ>` のとき、F12 で描いた画面をそのフォルダへ PNG で保存する。
+/// OS の画面取り込みでは GL の中身が白く写るため、描画結果をアプリから直接取り出す。
+fn save_screenshot_on_f12(ctx: &egui::Context) {
+    let Some(dir) = std::env::var_os("MV_SCREENSHOT").map(PathBuf::from) else {
+        return;
+    };
+    if !ctx.input(|i| i.key_pressed(egui::Key::F12)) {
+        return;
+    }
+    ctx.request_screenshot(move |img| {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
+        let path = dir.join(format!("shot-{stamp}.png"));
+        let [w, h] = img.size;
+        let rgba = img.pixels.iter().flat_map(|p| p.to_array()).collect();
+        let res = image::RgbaImage::from_raw(w as u32, h as u32, rgba)
+            .map(|buf| buf.save(&path));
+        eprintln!("screenshot	{}	{res:?}", path.display());
+    });
+    ctx.request_repaint();
 }
 
 impl eframe::App for ViewApp {
@@ -979,6 +1032,7 @@ impl eframe::App for ViewApp {
             probe.finish_previous(frame.info().cpu_usage);
         }
         self.show(ui);
+        save_screenshot_on_f12(ui.ctx());
         let observed = self.observed();
         if let Some(probe) = self.probe.as_mut() {
             probe.observe(observed);

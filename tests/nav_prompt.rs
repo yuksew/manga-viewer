@@ -89,16 +89,21 @@ fn plan_nav_single_and_spread_boundaries() {
     assert_eq!(plan_nav(0, 1, false, 3), Nav::Page(1));
     assert_eq!(plan_nav(2, 1, false, 3), Nav::Prompt(NavDir::Next));
     assert_eq!(plan_nav(0, -1, false, 3), Nav::Prompt(NavDir::Prev));
-    // 見開き: 送りは ±2、最終判定は右の頁
-    assert_eq!(plan_nav(0, 1, true, 6), Nav::Page(2));
-    assert_eq!(plan_nav(2, 1, true, 6), Nav::Page(4));
-    assert_eq!(plan_nav(4, 1, true, 6), Nav::Prompt(NavDir::Next));
-    assert_eq!(plan_nav(2, 1, true, 5), Nav::Page(4)); // 右が無い最終頁へ
-    assert_eq!(plan_nav(4, 1, true, 5), Nav::Prompt(NavDir::Next));
-    assert_eq!(plan_nav(3, 1, true, 5), Nav::Prompt(NavDir::Next)); // 右=4=last
-    assert_eq!(plan_nav(2, -1, true, 6), Nav::Page(0));
+    // 見開き: 表紙（索引 0）は 1 枚、以降は索引 1-2, 3-4… の組で送る。最終判定は組の末尾
+    assert_eq!(plan_nav(0, 1, true, 6), Nav::Page(1));
+    assert_eq!(plan_nav(1, 1, true, 6), Nav::Page(3));
+    assert_eq!(plan_nav(3, 1, true, 6), Nav::Page(5)); // 相手の無い最終頁へ
+    assert_eq!(plan_nav(5, 1, true, 6), Nav::Prompt(NavDir::Next));
+    assert_eq!(plan_nav(3, 1, true, 5), Nav::Prompt(NavDir::Next)); // 3-4 の 4=last
+    assert_eq!(plan_nav(4, 1, true, 5), Nav::Prompt(NavDir::Next)); // 4 は 3-4 の組
+    assert_eq!(plan_nav(3, -1, true, 6), Nav::Page(1));
+    assert_eq!(plan_nav(2, -1, true, 6), Nav::Page(0)); // 2 は 1-2 の組 → 表紙
     assert_eq!(plan_nav(1, -1, true, 6), Nav::Page(0));
     assert_eq!(plan_nav(0, -1, true, 6), Nav::Prompt(NavDir::Prev));
+    // ホイールをまとめて回した分は組単位で進み、端で止まる（端を越える確認は出さない）
+    assert_eq!(plan_nav(0, 3, true, 6), Nav::Page(5));
+    assert_eq!(plan_nav(1, 5, true, 6), Nav::Page(5));
+    assert_eq!(plan_nav(5, -9, true, 6), Nav::Page(0));
     // 1 頁だけの冊は両端
     assert_eq!(plan_nav(0, 1, true, 1), Nav::Prompt(NavDir::Next));
 }
@@ -180,21 +185,26 @@ fn spread_toggle_shows_two_pages_and_steps_by_two() {
     );
     let mut app = app_for(&dir.0.join("a.zip"));
     assert!(frame(&mut app, vec![]).contains("1/5  ["));
+    // 1 枚目は表紙として 1 枚で出す
     let text = frame(&mut app, vec![key_event(egui::Key::F)]);
-    assert!(text.contains("1-2/5  ["), "{text}");
+    assert!(text.contains("1/5  [見開き（表紙は 1 枚）]"), "{text}");
     let text = frame(&mut app, vec![key_event(egui::Key::ArrowRight)]);
-    assert!(text.contains("3-4/5  ["), "{text}");
-    assert_eq!(app.page(), 2);
-    // 右の頁(4)が last ではないので、さらに送れて最終の 1 頁へ
+    assert!(text.contains("2-3/5  ["), "{text}");
+    assert_eq!(app.page(), 1);
     let text = frame(&mut app, vec![wheel(-1.0)]);
-    assert!(text.contains("5/5  ["), "{text}");
+    assert!(text.contains("4-5/5  ["), "{text}");
     assert!(app.prompt().is_none());
     frame(&mut app, vec![wheel(-1.0)]);
     assert_eq!(app.prompt(), Some(NavDir::Next));
-    // 単頁に戻す
+    // 単頁に戻すと組の先頭の頁
     app.answer_prompt(false);
     let text = frame(&mut app, vec![key_event(egui::Key::F)]);
-    assert!(text.contains("5/5  ["), "{text}");
+    assert!(text.contains("4/5  ["), "{text}");
+    // 単頁で組の後ろ側（5 頁目）にいて見開きにすると、その組（4-5）に揃う
+    frame(&mut app, vec![key_event(egui::Key::ArrowRight)]);
+    let text = frame(&mut app, vec![key_event(egui::Key::F)]);
+    assert!(text.contains("4-5/5  ["), "{text}");
+    assert_eq!(app.page(), 3);
 }
 
 #[test]
@@ -215,7 +225,10 @@ fn spread_last_is_right_page() {
     let mut app = app_for(&dir.0.join("a.zip"));
     frame(&mut app, vec![key_event(egui::Key::F)]);
     frame(&mut app, vec![key_event(egui::Key::ArrowRight)]);
-    assert_eq!(app.page(), 2); // 3-4 の見開き。右が last
+    assert_eq!(app.page(), 1); // 2-3 の見開き
+    let text = frame(&mut app, vec![key_event(egui::Key::ArrowRight)]);
+    assert_eq!(app.page(), 3); // 相手の無い 4 頁目は 1 枚
+    assert!(text.contains("4/4  [見開き（最終頁は 1 枚）]"), "{text}");
     frame(&mut app, vec![key_event(egui::Key::ArrowRight)]);
     assert_eq!(app.prompt(), Some(NavDir::Next));
 }

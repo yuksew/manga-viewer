@@ -70,10 +70,14 @@ fn spread_draws_two_images_side_by_side_at_real_window_widths() {
     for width in [900.0, SPREAD_MIN_WIDTH] {
         let mut app = app_for(&zip);
         assert_eq!(run(&mut app, width, vec![]).1.len(), 1);
+        // 1 枚目は表紙なので見開きでも 1 枚
         let (_, rects) = run(&mut app, width, vec![key_event(egui::Key::F)]);
+        assert_eq!(rects.len(), 1, "width {width}: {rects:?}");
+        let (_, rects) = run(&mut app, width, vec![key_event(egui::Key::ArrowRight)]);
         assert_eq!(rects.len(), 2, "width {width}: {rects:?}");
-        assert!(rects[0].max.x <= width / 2.0 + 0.5, "{rects:?}");
-        assert!(rects[1].min.x >= width / 2.0 - 0.5, "{rects:?}");
+        // 2 頁は窓の中央で隙間なく接する
+        assert!((rects[0].max.x - width / 2.0).abs() < 0.5, "{rects:?}");
+        assert!((rects[1].min.x - width / 2.0).abs() < 0.5, "{rects:?}");
     }
 }
 
@@ -100,14 +104,19 @@ fn zip_with_sizes(tag: &str, sides: &[u32]) -> (TmpDir, std::path::PathBuf) {
 
 #[test]
 fn spread_puts_first_page_on_the_right_and_second_on_the_left() {
-    // 1 ページ目は 20px、2 ページ目は 60px の正方形。右綴じなら右半分が 20px、左半分が 60px
-    let (_dir, zip) = zip_with_sizes("sd-rtl", &[20, 60, 40]);
+    // 表紙の次の組: 2 ページ目は 20px、3 ページ目は 60px の正方形。右綴じなら右半分が 20px、左半分が 60px
+    let (_dir, zip) = zip_with_sizes("sd-rtl", &[40, 20, 60]);
     let mut app = app_for(&zip);
     run(&mut app, 900.0, vec![]);
-    let (_, rects) = run(&mut app, 900.0, vec![key_event(egui::Key::F)]);
+    run(&mut app, 900.0, vec![key_event(egui::Key::F)]);
+    let (_, rects) = run(&mut app, 900.0, vec![key_event(egui::Key::ArrowRight)]);
     assert_eq!(rects.len(), 2, "{rects:?}");
     let (left, right) = (rects[0], rects[1]);
-    assert!(left.max.x <= 450.5 && right.min.x >= 449.5, "{rects:?}");
+    // 大きさの違う頁でも中央で接する（間に隙間を作らない）
+    assert!(
+        (left.max.x - 450.0).abs() < 0.5 && (right.min.x - 450.0).abs() < 0.5,
+        "{rects:?}"
+    );
     assert!(
         (right.width() - 20.0).abs() < 0.5,
         "右は 1 ページ目: {rects:?}"
@@ -124,7 +133,7 @@ fn f_works_from_text_event_only_and_not_twice() {
     let mut app = app_for(&zip);
     // IME 経由などでキーイベントが無くテキストだけ来た場合
     let (text, _) = run(&mut app, 1000.0, vec![egui::Event::Text("f".into())]);
-    assert!(text.contains("1-2/3") && text.contains("見開き"), "{text}");
+    assert!(text.contains("1/3  [見開き（表紙は 1 枚）]"), "{text}");
     // キーとテキストが同じフレームに来ても 1 回だけ切り替わる
     let both = vec![key_event(egui::Key::F), egui::Event::Text("f".into())];
     let (text, _) = run(&mut app, 1000.0, both);
@@ -167,11 +176,15 @@ fn toggling_f_reuses_cached_pages() {
 #[test]
 fn mode_label_and_prefetch_plan() {
     assert!(mode_label(false, 900.0, false, 0, 5).contains("単頁"));
-    assert!(mode_label(true, 900.0, true, 0, 5).starts_with("見開き"));
+    assert!(mode_label(true, 900.0, true, 0, 5).contains("表紙"));
+    assert!(mode_label(true, 900.0, true, 1, 5).contains("F で単頁"));
+    assert!(mode_label(true, 900.0, true, 4, 5).contains("F で単頁")); // 4 は 3-4 の組
     assert!(mode_label(true, 600.0, false, 0, 5).contains("見開きにできません"));
-    assert!(mode_label(true, 900.0, true, 4, 5).contains("最終頁"));
+    assert!(mode_label(true, 900.0, true, 5, 6).contains("最終頁"));
     assert_eq!(prefetch_plan(5, false, 20), vec![6, 7, 4, 3]);
-    assert_eq!(prefetch_plan(4, true, 20), vec![6, 7, 8, 9, 3, 2, 1, 0]);
+    assert_eq!(prefetch_plan(3, true, 20), vec![5, 6, 7, 8, 2, 1, 0]);
+    assert_eq!(prefetch_plan(4, true, 20), prefetch_plan(3, true, 20)); // 4 は 3-4 の組
+    assert_eq!(prefetch_plan(0, true, 20), vec![1, 2, 3, 4]);
     assert_eq!(prefetch_plan(0, false, 2), vec![1]);
     assert_eq!(keep_range(10, 12), 4..12);
     assert_eq!(keep_range(0, 3), 0..3);
