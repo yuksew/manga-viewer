@@ -11,6 +11,7 @@ use eframe::egui;
 
 use crate::book::Book;
 use crate::decode::{self, Decoded};
+use crate::drag::{Drag, DragInput};
 use crate::index::{BookRow, Index, Status};
 use crate::neighbor::{NavDir, resolve_neighbor};
 use crate::scan::BookKind;
@@ -171,6 +172,8 @@ pub struct ViewApp {
     /// ドロップで開けなかったときの文言
     open_error: Option<String>,
     slots: Vec<Slot>,
+    /// 窓ドラッグ移動の状態
+    drag: Drag,
     /// 読み込み済みの（左頁, 見開きか）
     loaded: Option<(usize, bool)>,
     deadline: Option<Instant>,
@@ -203,6 +206,7 @@ impl ViewApp {
             index: None,
             open_error: None,
             slots: Vec::new(),
+            drag: Drag::default(),
             loaded: None,
             deadline: None,
         }
@@ -317,6 +321,7 @@ impl ViewApp {
         if let Some(path) = dropped {
             self.open_dropped(&path);
         }
+        self.update_window_drag(ctx);
         if let Some(err) = &self.open_error {
             ui.colored_label(egui::Color32::LIGHT_RED, err);
         }
@@ -362,6 +367,21 @@ impl ViewApp {
         }
     }
 
+    /// 描画領域のどこでも押し下げ＋ドラッグで窓を動かす（状態遷移は [`crate::drag`]、優先順位もそこに明記）。
+    /// 移動は OS 任せのドラッグ（`StartDrag`）で、閾値を超えた瞬間に 1 回だけ送る。
+    fn update_window_drag(&mut self, ctx: &egui::Context) {
+        let on_widget = ctx.egui_wants_pointer_input();
+        let input = ctx.input(|i| DragInput {
+            pressed: i.pointer.primary_pressed(),
+            down: i.pointer.primary_down(),
+            pos: i.pointer.interact_pos().map(|p| (p.x, p.y)),
+            on_widget,
+        });
+        if self.drag.update(input) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+    }
+
     /// 確認中でないときのキー/ホイール入力（Esc 終了・F トグル・頁送り）。
     fn handle_input(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -370,7 +390,12 @@ impl ViewApp {
         if ctx.input(|i| i.key_pressed(egui::Key::F)) {
             self.spread = !self.spread;
         }
-        let delta = ctx.input(nav_delta);
+        // 窓移動中はキー/ホイールの頁送りを出さない
+        let delta = if self.drag.is_moving() {
+            0
+        } else {
+            ctx.input(nav_delta)
+        };
         if delta == 0 {
             return;
         }
