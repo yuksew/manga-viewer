@@ -185,6 +185,8 @@ impl Library {
     /// 1 フレーム分の描画と入力。
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<Action> {
         let ctx = ui.ctx().clone();
+        // 文字を選べるラベルはドラッグを取るので、一覧の上のドラッグを窓の移動に使えるよう選べなくする
+        ui.style_mut().interaction.selectable_labels = false;
         let cols = grid_columns(ui.available_width());
         let mut action = self.handle_keys(&ctx, cols);
 
@@ -213,9 +215,14 @@ impl Library {
         }
 
         let n_rows = self.rows.len().div_ceil(cols);
+        // 一覧の上のドラッグは窓の移動に使うので、ドラッグでのスクロールはしない（ホイール・スクロールバーは使える）
         let mut area = egui::ScrollArea::vertical()
             .id_salt("library-grid")
-            .auto_shrink([false, false]);
+            .auto_shrink([false, false])
+            .scroll_source(egui::scroll_area::ScrollSource {
+                drag: egui::scroll_area::DragScroll::Never,
+                ..egui::scroll_area::ScrollSource::ALL
+            });
         if std::mem::take(&mut self.scroll_to_selected) {
             let top = (self.selected / cols) as f32 * CELL_H;
             let (offset, height) = self.scroll;

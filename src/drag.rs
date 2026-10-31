@@ -54,6 +54,11 @@ impl Drag {
                 false
             }
             Drag::Pressed { origin } => {
+                // 動き出す前にウィジェット（スクロールバーなど）がポインタを取ったら、窓は動かさない
+                if input.on_widget {
+                    *self = Drag::Idle;
+                    return false;
+                }
                 let Some((x, y)) = input.pos else {
                     return false;
                 };
@@ -128,6 +133,18 @@ mod tests {
         i.on_widget = true;
         d.update(i);
         assert!(!d.update(inp(false, true, (100.0, 100.0))));
+        assert_eq!(d, Drag::Idle);
+    }
+
+    #[test]
+    fn widget_taking_pointer_before_threshold_cancels() {
+        // 一覧のスクロールバーなど、押した後でドラッグを掴んだウィジェットがあれば動かさない
+        let mut d = Drag::default();
+        d.update(inp(true, true, (0.0, 0.0)));
+        let mut i = inp(false, true, (20.0, 0.0));
+        i.on_widget = true;
+        assert!(!d.update(i));
+        assert!(!d.update(inp(false, true, (40.0, 0.0))));
         assert_eq!(d, Drag::Idle);
     }
 

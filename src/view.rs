@@ -948,7 +948,15 @@ impl ViewApp {
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-            ui.centered_and_justified(|ui| ui.label(DROP_GUIDE));
+            // 案内はウィジェットにせず直接描く（窓全体を占めて、ドラッグ移動を妨げないように）
+            let rect = ui.max_rect();
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                DROP_GUIDE,
+                egui::TextStyle::Body.resolve(ui.style()),
+                ui.visuals().text_color(),
+            );
             return;
         }
 
@@ -1209,7 +1217,14 @@ impl ViewApp {
             self.drag = Drag::default();
             return;
         }
-        let on_widget = ctx.egui_wants_pointer_input();
+        // 閲覧中は押した位置がボタン（はい/いいえ）などのウィジェットなら動かさない。冊を開いていない
+        // とき（一覧・空の窓）は、表紙のマスのようにクリックだけを受けるものの上からでも動かし、
+        // ドラッグを掴んだウィジェット（スクロールバー）があるときだけ動かさない
+        let on_widget = if self.book.is_some() {
+            ctx.egui_wants_pointer_input()
+        } else {
+            ctx.dragged_id().is_some()
+        };
         let input = ctx.input(|i| DragInput {
             pressed: i.pointer.primary_pressed(),
             down: i.pointer.primary_down(),
