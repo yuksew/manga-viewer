@@ -22,6 +22,9 @@ use crate::library::{Action, Library};
 use crate::neighbor::{NavDir, resolve_neighbor};
 use crate::scan::BookKind;
 
+/// 窓のタイトルバーに出すアプリ名（冊を開くと「冊名 - アプリ名」）。
+const APP_NAME: &str = "manga-viewer";
+
 /// 窓が空のときに出すガイド文言。
 pub const DROP_GUIDE: &str = "ここに zip またはフォルダをドロップ";
 
@@ -306,6 +309,8 @@ pub struct ViewApp {
     /// 通し測定（`MV_TRACE=1` か `--autopilot`、#3）
     probe: Option<Probe>,
     autopilot: Option<Autopilot>,
+    /// 最後に OS のタイトルバーへ送った文字列（変わったときだけ送る）
+    window_title: Option<String>,
 }
 
 impl ViewApp {
@@ -352,6 +357,7 @@ impl ViewApp {
             drew_pages: false,
             probe: None,
             autopilot: None,
+            window_title: None,
         }
     }
 
@@ -616,6 +622,29 @@ impl ViewApp {
 
     /// 1 フレーム分の描画（入力処理・頁読み込み・ラベル/画像/エラー文言）。
     pub fn show(&mut self, ui: &mut egui::Ui) {
+        self.show_frame(ui);
+        self.sync_window_title(ui.ctx());
+    }
+
+    /// タイトルバーの文字列。冊を開いていれば冊名を出す。
+    #[must_use]
+    pub fn window_title(&self) -> String {
+        if self.book.is_some() && !self.title.is_empty() {
+            format!("{} - {APP_NAME}", self.title)
+        } else {
+            APP_NAME.to_string()
+        }
+    }
+
+    fn sync_window_title(&mut self, ctx: &egui::Context) {
+        let want = self.window_title();
+        if self.window_title.as_deref() != Some(want.as_str()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(want.clone()));
+            self.window_title = Some(want);
+        }
+    }
+
+    fn show_frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
         self.drew_pages = false;
@@ -675,7 +704,7 @@ impl ViewApp {
             format!("{}/{}", self.page + 1, count)
         };
         let mode = mode_label(self.spread, width, spread, self.page, count);
-        ui.label(format!("{}  {label}  [{mode}]", self.title));
+        ui.label(format!("{label}  [{mode}]"));
         if let Some(notice) = self.notice {
             ui.colored_label(egui::Color32::YELLOW, notice);
         }
@@ -1084,7 +1113,7 @@ pub fn run(
 pub fn launch(app: ViewApp) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("manga-viewer")
+            .with_title(app.window_title())
             .with_inner_size([900.0, 1000.0]),
         // vsync を切る（#3）。この機の実窓の測定で、vsync 有りは swap が 1 フレームにつき 31〜46 ms
         // 止まり、冊を開いて 1 頁目が出るまで 96 ms かかった（切ると 24 ms）。Windows の窓表示は
@@ -1097,7 +1126,7 @@ pub fn launch(app: ViewApp) -> anyhow::Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "manga-viewer",
+        APP_NAME,
         options,
         Box::new(|cc| {
             install_japanese_font(&cc.egui_ctx);

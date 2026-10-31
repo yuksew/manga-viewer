@@ -127,7 +127,10 @@ fn enter_opens_selected_book_and_esc_returns_to_list() {
     assert!(!h.app.in_library());
     assert_eq!(h.app.title(), "v2");
     let text = h.frame(vec![]).0;
-    assert!(text.contains("v2  1/2"), "{text}");
+    assert!(text.contains("1/2  ["), "{text}");
+    // 冊名は窓の中ではなくタイトルバーに出す
+    assert!(!text.contains("v2"), "{text}");
+    assert_eq!(h.app.window_title(), "v2 - manga-viewer");
 
     // 閲覧中の Esc は窓を閉じずに一覧へ戻り、読んでいた冊が選ばれている
     h.key(egui::Key::Escape);
@@ -135,6 +138,7 @@ fn enter_opens_selected_book_and_esc_returns_to_list() {
     assert_eq!(h.app.library().unwrap().selected(), 1);
     let text = h.frame(vec![]).0;
     assert!(text.contains("4 冊"), "{text}");
+    assert_eq!(h.app.window_title(), "manga-viewer");
 }
 
 #[test]

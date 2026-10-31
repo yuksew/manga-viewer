@@ -90,7 +90,7 @@ fn window_texture_bytes_match_zip_image() {
     let got: Vec<u8> = tex.pixels.iter().flat_map(|p| p.to_array()).collect();
     assert_eq!(got, expected.rgba);
     assert_eq!(&got[0..4], [255, 0, 0, 255]); // 左上の赤が残っている
-    assert!(text.contains("題名  1/2"), "{text}");
+    assert!(text.contains("1/2  ["), "{text}");
     assert!(!text.contains("表示できません"), "{text}");
 }
 

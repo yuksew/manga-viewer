@@ -179,22 +179,22 @@ fn spread_toggle_shows_two_pages_and_steps_by_two() {
         &["1.png", "2.png", "3.png", "4.png", "5.png"],
     );
     let mut app = app_for(&dir.0.join("a.zip"));
-    assert!(frame(&mut app, vec![]).contains("a  1/5"));
+    assert!(frame(&mut app, vec![]).contains("1/5  ["));
     let text = frame(&mut app, vec![key_event(egui::Key::F)]);
-    assert!(text.contains("a  1-2/5"), "{text}");
+    assert!(text.contains("1-2/5  ["), "{text}");
     let text = frame(&mut app, vec![key_event(egui::Key::ArrowRight)]);
-    assert!(text.contains("a  3-4/5"), "{text}");
+    assert!(text.contains("3-4/5  ["), "{text}");
     assert_eq!(app.page(), 2);
     // 右の頁(4)が last ではないので、さらに送れて最終の 1 頁へ
     let text = frame(&mut app, vec![wheel(-1.0)]);
-    assert!(text.contains("a  5/5"), "{text}");
+    assert!(text.contains("5/5  ["), "{text}");
     assert!(app.prompt().is_none());
     frame(&mut app, vec![wheel(-1.0)]);
     assert_eq!(app.prompt(), Some(NavDir::Next));
     // 単頁に戻す
     app.answer_prompt(false);
     let text = frame(&mut app, vec![key_event(egui::Key::F)]);
-    assert!(text.contains("a  5/5"), "{text}");
+    assert!(text.contains("5/5  ["), "{text}");
 }
 
 #[test]
@@ -203,7 +203,7 @@ fn narrow_window_stays_single_even_when_toggled() {
     write_zip(&dir.0.join("a.zip"), &["1.png", "2.png", "3.png"]);
     let mut app = app_for(&dir.0.join("a.zip"));
     let text = frame_w(&mut app, 400.0, vec![key_event(egui::Key::F)]);
-    assert!(text.contains("a  1/3"), "{text}");
+    assert!(text.contains("1/3  ["), "{text}");
     frame_w(&mut app, 400.0, vec![key_event(egui::Key::ArrowRight)]);
     assert_eq!(app.page(), 1);
 }

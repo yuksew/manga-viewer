@@ -129,7 +129,7 @@ fn f_works_from_text_event_only_and_not_twice() {
     let both = vec![key_event(egui::Key::F), egui::Event::Text("f".into())];
     let (text, _) = run(&mut app, 1000.0, both);
     assert!(
-        text.contains("a  1/3") && text.contains("単頁（F で見開き）"),
+        text.contains("1/3  [") && text.contains("単頁（F で見開き）"),
         "{text}"
     );
 }
