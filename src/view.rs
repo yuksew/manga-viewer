@@ -25,6 +25,11 @@ use crate::scan::BookKind;
 /// 窓のタイトルバーに出すアプリ名（冊を開くと「冊名 - アプリ名」）。
 const APP_NAME: &str = "manga-viewer";
 
+/// 窓の状態（大きさ・位置・見開き）の保存ファイル名（索引 DB と同じフォルダ、#13）。
+const STATE_FILE: &str = "window.ron";
+/// 保存ファイルの中の見開きの希望の鍵。
+const SPREAD_KEY: &str = "spread";
+
 /// 窓が空のときに出すガイド文言。
 pub const DROP_GUIDE: &str = "ここに zip またはフォルダをドロップ";
 
@@ -344,6 +349,8 @@ pub struct ViewApp {
     window_title: Option<String>,
     /// 頁スライダーをつまんでいる間の行き先（0 始まり）。離したときにその頁へ飛ぶ
     slider_drag: Option<usize>,
+    /// 窓の状態（大きさ・位置・見開き）を次の起動に持ち越すか（#13）。[`ViewApp::persists`] で決まる
+    persist: bool,
 }
 
 impl ViewApp {
@@ -358,6 +365,35 @@ impl ViewApp {
             deadline: exit_after.map(|d| Instant::now() + d),
             ..Self::empty()
         }
+    }
+
+    /// 窓の状態を次の起動に持ち越すか（#13）。測定（`MV_TRACE`・`--autopilot`）と自動で閉じる窓
+    /// （`--exit-after-ms`）は毎回同じ条件で動かしたいので持ち越さない。`MV_PERSIST=0` でも切れる。
+    #[must_use]
+    pub fn persists(&self) -> bool {
+        self.probe.is_none()
+            && self.deadline.is_none()
+            && std::env::var_os("MV_PERSIST").is_none_or(|v| v != "0")
+    }
+
+    /// 窓の状態を保存するかを決める（[`launch`] は [`ViewApp::persists`] で決める。試験用）。
+    #[must_use]
+    pub fn with_persist(mut self, on: bool) -> Self {
+        self.persist = on;
+        self
+    }
+
+    /// 前回保存した状態（見開きの希望）を戻す。窓の大きさ・位置は eframe が戻す。
+    pub fn restore_state(&mut self, storage: &dyn eframe::Storage) {
+        if let Some(v) = storage.get_string(SPREAD_KEY) {
+            self.spread = v == "1";
+        }
+    }
+
+    /// 見開きの希望（窓が狭いと実際は単頁）。
+    #[must_use]
+    pub fn spread_wanted(&self) -> bool {
+        self.spread
     }
 
     /// 冊のない空の窓（ドロップ待ち）。
@@ -392,6 +428,7 @@ impl ViewApp {
             autopilot: None,
             window_title: None,
             slider_drag: None,
+            persist: false,
         }
     }
 
@@ -1124,6 +1161,18 @@ impl eframe::App for ViewApp {
         }
     }
 
+    /// 見開きの希望を保存する（窓の大きさ・位置は eframe が保存する）。持ち越さない窓では何もしない。
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if self.persist {
+            storage.set_string(SPREAD_KEY, if self.spread { "1" } else { "0" }.to_string());
+        }
+    }
+
+    /// egui 内部の状態（ウィジェットの開閉など）は使わないので保存しない。
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         let now = Instant::now();
         if let Some(probe) = self.probe.as_mut() {
@@ -1246,7 +1295,8 @@ pub fn run(
 }
 
 /// 組み立て済みの [`ViewApp`] を窓で動かす。窓が閉じるまで戻らない。
-pub fn launch(app: ViewApp) -> anyhow::Result<()> {
+pub fn launch(mut app: ViewApp) -> anyhow::Result<()> {
+    app.persist = app.persists();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(app.window_title())
@@ -1259,6 +1309,12 @@ pub fn launch(app: ViewApp) -> anyhow::Result<()> {
             vsync: std::env::var_os("MV_VSYNC").is_some_and(|v| v == "1"),
             ..Default::default()
         },
+        // 窓の大きさ・位置・最大化・全画面は eframe が保存して戻す（#13）。画面外に出る位置は
+        // eframe（egui-winit）が今のモニターへ寄せる。保存先は索引 DB と同じフォルダ
+        persist_window: app.persist,
+        persistence_path: crate::index::default_db_path()
+            .ok()
+            .and_then(|db| Some(db.parent()?.join(STATE_FILE))),
         ..Default::default()
     };
     eframe::run_native(
@@ -1266,6 +1322,9 @@ pub fn launch(app: ViewApp) -> anyhow::Result<()> {
         options,
         Box::new(|cc| {
             install_japanese_font(&cc.egui_ctx);
+            if let (true, Some(storage)) = (app.persist, cc.storage) {
+                app.restore_state(storage);
+            }
             Ok(Box::new(app))
         }),
     )

@@ -64,6 +64,8 @@ try { cargo build -q } finally { Pop-Location }
 if ($LASTEXITCODE -ne 0) { throw 'cargo build に失敗' }
 
 $env:MV_SCREENSHOT = $shots
+# 前回の窓の大きさ・見開きを持ち越さない（毎回同じ条件で撮る、#13）
+$env:MV_PERSIST = '0'
 $exe = Join-Path $repo 'target\debug\manga-viewer.exe'
 $err = Join-Path $work 'stderr.txt'
 $p = Start-Process -FilePath $exe -ArgumentList @('view', '--path', "`"$Book`"") -PassThru -RedirectStandardError $err
