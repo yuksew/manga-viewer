@@ -164,4 +164,26 @@ impl Book {
             Source::Folder(dir) => Ok(fs::read(dir.join(&page.name))?),
         }
     }
+
+    /// 頁 `i` の先頭 `max` バイトだけを読む（寸法を見るため、#20）。圧縮された ZIP でも頭から
+    /// 展開して途中でやめるので、頁全体を読むより速い。
+    pub fn read_page_prefix(&self, i: usize, max: usize) -> Result<Vec<u8>, BookError> {
+        let page = self.pages.get(i).ok_or(BookError::PageOutOfRange(i))?;
+        let mut buf = Vec::new();
+        match &self.source {
+            Source::Zip(archive) => {
+                let mut archive = archive.lock().unwrap_or_else(|e| e.into_inner());
+                let entry = archive
+                    .by_index(page.index)
+                    .map_err(|e| BookError::Zip(e.to_string()))?;
+                entry.take(max as u64).read_to_end(&mut buf)?;
+            }
+            Source::Folder(dir) => {
+                File::open(dir.join(&page.name))?
+                    .take(max as u64)
+                    .read_to_end(&mut buf)?;
+            }
+        }
+        Ok(buf)
+    }
 }

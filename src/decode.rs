@@ -155,6 +155,16 @@ pub fn into_rgba(img: DynamicImage) -> Vec<u8> {
     }
 }
 
+/// 画像の寸法（幅, 高さ）を先頭のバイト列から読む。復号はしない。読めなければ `None`（#20）。
+#[must_use]
+pub fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
+}
+
 /// 縦横比を保って `max` に収まる寸法（拡大しない・最小 1）。
 #[must_use]
 pub fn fit_within((w, h): (u32, u32), (max_w, max_h): (u32, u32)) -> (u32, u32) {

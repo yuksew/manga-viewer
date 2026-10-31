@@ -158,31 +158,64 @@ impl Layout {
 /// 見開きは 1 枚目（索引 0）を表紙として 1 枚で出し、以降を索引 1-2, 3-4… で組む（多くの冊は 1 枚目が表紙）。
 /// 組ずらし（[`Layout::Shifted`]）は索引 0-1, 2-3… で組む。最終頁が組の相手を持たなければ 1 枚。
 #[must_use]
-pub fn spread_pages(page: usize, layout: impl Into<Layout>, count: usize) -> (usize, usize) {
-    let last = count.saturating_sub(1);
+pub fn spread_pages<'a>(
+    page: usize,
+    layout: impl Into<Layout>,
+    pages: impl Into<PageSet<'a>>,
+) -> (usize, usize) {
+    let pages = pages.into();
+    let last = pages.count.saturating_sub(1);
     let page = page.min(last);
-    let start = match layout.into() {
+    let mut start = match layout.into() {
         Layout::Single => return (page, page),
         Layout::Spread if page == 0 => return (0, 0),
-        // 奇数索引が組の先頭（偶数索引は 1 つ前と組む）
-        Layout::Spread => page - (page + 1) % 2,
-        // 偶数索引が組の先頭
-        Layout::Shifted => page - page % 2,
+        Layout::Spread => 1,
+        Layout::Shifted => 0,
     };
-    (start, (start + 1).min(last))
+    // 頭から組を作る。横長の頁は 1 枚で、その次から組み直す（#20）
+    loop {
+        let alone = start == last || pages.is_wide(start) || pages.is_wide(start + 1);
+        let end = if alone { start } else { start + 1 };
+        if page <= end {
+            return (start, end);
+        }
+        start = end + 1;
+    }
+}
+
+/// 冊の頁数と、分かっている範囲の横長の頁（#20）。頁数だけなら全頁を縦長とみなす。
+#[derive(Clone, Copy, Debug)]
+pub struct PageSet<'a> {
+    pub count: usize,
+    /// 頁ごとに横長（幅 > 高さ）か。短ければ足りない分は縦長とみなす
+    pub wide: &'a [bool],
+}
+
+impl From<usize> for PageSet<'_> {
+    fn from(count: usize) -> Self {
+        PageSet { count, wide: &[] }
+    }
+}
+
+impl PageSet<'_> {
+    fn is_wide(&self, i: usize) -> bool {
+        self.wide.get(i).copied().unwrap_or(false)
+    }
 }
 
 /// 見開きの状態を窓内に出す文言（切替が効いたか・効かない理由を利用者に見せる）。
 #[must_use]
-pub fn mode_label(
+pub fn mode_label<'a>(
     want: bool,
     width: f32,
     active: impl Into<Layout>,
     page: usize,
-    count: usize,
+    pages: impl Into<PageSet<'a>>,
 ) -> String {
     let layout = active.into();
-    let (start, end) = spread_pages(page, layout, count);
+    let pages = pages.into();
+    let count = pages.count;
+    let (start, end) = spread_pages(page, layout, pages);
     let shifted = if layout == Layout::Shifted {
         "・組ずらし"
     } else {
@@ -192,8 +225,12 @@ pub fn mode_label(
         "単頁（F で見開き）".to_string()
     } else if !layout.is_spread() {
         format!("単頁（窓幅 {width:.0} が {SPREAD_MIN_WIDTH:.0} 未満のため見開きにできません）")
+    } else if start == end && pages.is_wide(start) {
+        format!("見開き{shifted}（横長の頁は 1 枚）")
     } else if start == end && start == 0 && count > 1 {
         "見開き（表紙は 1 枚・S で組をずらす）".to_string()
+    } else if start == end && end + 1 < count {
+        format!("見開き{shifted}（次が横長のため 1 枚）")
     } else if start == end {
         format!("見開き{shifted}（最終頁は 1 枚）")
     } else if layout == Layout::Shifted {
@@ -205,10 +242,16 @@ pub fn mode_label(
 
 /// 先読みする頁。今の表示の次と前を 1 送り分ずつ、次を先に（範囲内のみ）。
 #[must_use]
-pub fn prefetch_plan(page: usize, layout: impl Into<Layout>, count: usize) -> Vec<usize> {
+pub fn prefetch_plan<'a>(
+    page: usize,
+    layout: impl Into<Layout>,
+    pages: impl Into<PageSet<'a>>,
+) -> Vec<usize> {
     let layout = layout.into();
+    let pages = pages.into();
+    let count = pages.count;
     let span = if layout.is_spread() { 2 } else { 1 };
-    let (start, end) = spread_pages(page, layout, count);
+    let (start, end) = spread_pages(page, layout, pages);
     let next = (end + 1..end + 1 + span * 2).filter(|&i| i < count);
     let prev = (start.saturating_sub(span * 2)..start).rev();
     next.chain(prev).collect()
@@ -326,10 +369,16 @@ pub enum Nav {
 /// 最終頁判定は今の組の末尾（右綴じなので左側の頁）、最初頁判定は組の先頭が 0 か。端の意味は単頁時と変わらない。
 /// 端を越えるのは今いる組が端のときだけで、複数回の送りが途中で端に着いたらそこで止まる。
 #[must_use]
-pub fn plan_nav(page: usize, delta: isize, layout: impl Into<Layout>, count: usize) -> Nav {
+pub fn plan_nav<'a>(
+    page: usize,
+    delta: isize,
+    layout: impl Into<Layout>,
+    pages: impl Into<PageSet<'a>>,
+) -> Nav {
     let layout = layout.into();
-    let last = count.saturating_sub(1);
-    let (mut start, mut end) = spread_pages(page, layout, count);
+    let pages = pages.into();
+    let last = pages.count.saturating_sub(1);
+    let (mut start, mut end) = spread_pages(page, layout, pages);
     if delta > 0 && end >= last {
         return Nav::Prompt(NavDir::Next);
     }
@@ -338,9 +387,9 @@ pub fn plan_nav(page: usize, delta: isize, layout: impl Into<Layout>, count: usi
     }
     for _ in 0..delta.unsigned_abs() {
         (start, end) = if delta > 0 && end < last {
-            spread_pages(end + 1, layout, count)
+            spread_pages(end + 1, layout, pages)
         } else if delta < 0 && start > 0 {
-            spread_pages(start - 1, layout, count)
+            spread_pages(start - 1, layout, pages)
         } else {
             break;
         };
@@ -436,6 +485,12 @@ pub struct ViewApp {
     preview_inflight: Option<usize>,
     preview_tx: Sender<Loaded>,
     preview_rx: Receiver<Loaded>,
+    /// 頁ごとに横長か（#20）。冊を開いたら裏で寸法を調べて埋め、復号した頁の寸法でも埋める
+    wide: Vec<bool>,
+    /// 今の冊の寸法調べを始めたか
+    dims_started: bool,
+    dims_tx: Sender<(u64, Vec<bool>)>,
+    dims_rx: Receiver<(u64, Vec<bool>)>,
 }
 
 impl ViewApp {
@@ -524,6 +579,7 @@ impl ViewApp {
     pub fn empty() -> Self {
         let (tx, rx) = mpsc::channel();
         let (preview_tx, preview_rx) = mpsc::channel();
+        let (dims_tx, dims_rx) = mpsc::channel();
         Self {
             title: String::new(),
             book: None,
@@ -561,6 +617,10 @@ impl ViewApp {
             preview_inflight: None,
             preview_tx,
             preview_rx,
+            wide: Vec::new(),
+            dims_started: false,
+            dims_tx,
+            dims_rx,
         }
     }
 
@@ -637,6 +697,8 @@ impl ViewApp {
         self.visible.clear();
         self.generation += 1;
         self.opens += 1;
+        self.wide.clear();
+        self.dims_started = false;
     }
 
     /// 測定を付ける（#3）。`autopilot` があればキーを注入して場面を再現し、終われば窓を閉じる。
@@ -910,7 +972,7 @@ impl ViewApp {
             (Some(a), Some(b)) if a != b => format!("{}-{}/{}", a + 1, b + 1, count),
             _ => format!("{}/{}", self.page + 1, count),
         };
-        let mode = mode_label(self.spread, width, layout, self.page, count);
+        let mode = mode_label(self.spread, width, layout, self.page, self.page_set(count));
         // 全画面ではタイトルバーが無いので冊名もここに出す
         self.status = if is_fullscreen(ctx) {
             format!("{}  {label}  [{mode}]", self.title)
@@ -1211,7 +1273,7 @@ impl ViewApp {
         let count = self.book.as_deref().map_or(0, Book::page_count);
         let layout = self.layout(ctx.content_rect().width());
         self.notice = None;
-        match plan_nav(self.page, delta, layout, count) {
+        match plan_nav(self.page, delta, layout, self.page_set(count)) {
             Nav::Page(p) => self.page = p,
             Nav::Prompt(dir) => self.prompt = Some(dir),
         }
@@ -1243,6 +1305,7 @@ impl ViewApp {
             return;
         };
         let count = book.page_count();
+        self.update_wide(&book);
         // 窓が前に縮めた大きさより広がったら、粗く見えないよう作り直す（狭まる分は GPU の縮小で足りる）
         let target = window_target(ctx);
         self.target = target;
@@ -1254,7 +1317,7 @@ impl ViewApp {
         }
         let target = self.decoded_for;
         // 見開きでは組の先頭に揃える（単頁から F で切り替えたときなど）
-        let (start, end) = spread_pages(self.page, layout, count);
+        let (start, end) = spread_pages(self.page, layout, self.page_set(count));
         self.page = start;
         self.visible = (start..=end).collect();
         // 表紙を仮表示している先頭頁は待たずに裏で復号し、届いたフレームで差し替える
@@ -1283,11 +1346,54 @@ impl ViewApp {
             }
         }
         self.drain(ctx, None);
-        for i in prefetch_plan(self.page, layout, count) {
+        self.start_dims_scan(ctx, &book);
+        for i in prefetch_plan(self.page, layout, self.page_set(count)) {
             self.spawn_load(ctx, &book, i, target);
         }
         let keep = keep_range(self.page, count);
         self.cache.retain(|i, _| keep.contains(i));
+    }
+
+    /// 頁数と横長の頁（組を決める関数に渡す）。
+    fn page_set(&self, count: usize) -> PageSet<'_> {
+        PageSet {
+            count,
+            wide: &self.wide,
+        }
+    }
+
+    /// 全頁の寸法調べを裏で始める（#20、冊ごとに 1 回）。表示中の頁を読み終えてから呼ぶ
+    /// （同じ ZIP の読み取りを取り合って、開いた直後の 1 頁目を遅らせないため）。
+    fn start_dims_scan(&mut self, ctx: &egui::Context, book: &Arc<Book>) {
+        if self.dims_started {
+            return;
+        }
+        self.dims_started = true;
+        let (book, tx, ctx, serial) = (book.clone(), self.dims_tx.clone(), ctx.clone(), self.opens);
+        rayon::spawn(move || {
+            let wide = scan_wide(&book);
+            let _ = tx.send((serial, wide));
+            ctx.request_repaint();
+        });
+    }
+
+    /// 横長の頁の一覧を進める（#20）。届いた寸法調べを取り込み、復号済みの頁は本当の寸法で
+    /// 上書きする。表示はこれを待たない。
+    fn update_wide(&mut self, book: &Arc<Book>) {
+        let count = book.page_count();
+        while let Ok((serial, wide)) = self.dims_rx.try_recv() {
+            if serial == self.opens && wide.len() == count {
+                self.wide = wide;
+            }
+        }
+        self.wide.resize(count, false);
+        for (&i, slot) in &self.cache {
+            if slot.size.y > 0.0
+                && let Some(w) = self.wide.get_mut(i)
+            {
+                *w = slot.size.x > slot.size.y;
+            }
+        }
     }
 
     /// 頁 `i` を裏で復号する（キャッシュ済み・復号中なら何もしない）。
@@ -1303,6 +1409,26 @@ impl ViewApp {
             ctx.request_repaint();
         });
     }
+}
+
+/// 冊の全頁が横長（幅 > 高さ）かを、先頭だけ読んで調べる（#20）。先頭に寸法が無い頁だけ
+/// 全体を読む。読めない頁は縦長とみなす（壊れた頁は表示側で理由を出す）。
+fn scan_wide(book: &Book) -> Vec<bool> {
+    const PREFIX: usize = 64 * 1024;
+    (0..book.page_count())
+        .map(|i| {
+            let dims = book
+                .read_page_prefix(i, PREFIX)
+                .ok()
+                .and_then(|b| decode::dimensions(&b))
+                .or_else(|| {
+                    book.read_page_bytes(i)
+                        .ok()
+                        .and_then(|b| decode::dimensions(&b))
+                });
+            dims.is_some_and(|(w, h)| w > h)
+        })
+        .collect()
 }
 
 /// 窓が全画面か（分からなければ窓扱い）。

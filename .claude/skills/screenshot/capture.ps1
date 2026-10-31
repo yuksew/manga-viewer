@@ -30,13 +30,15 @@ Add-Type -AssemblyName System.Drawing, System.Windows.Forms
 # 同じ PowerShell で読み込んだ型は作り直せないので、中身を変えたら型名の番号を上げる
 Add-Type @'
 using System; using System.Runtime.InteropServices;
-public class MvCapWin2 {
+public class MvCapWin3 {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, IntPtr e);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern void keybd_event(byte k, byte s, uint f, IntPtr e);
   public struct RECT { public int L, T, R, B; }
   public struct POINT { public int X, Y; }
 }
@@ -75,29 +77,42 @@ $p = Start-Process -FilePath $exe -ArgumentList @('view', '--path', "`"$Book`"")
 try {
     Start-Sleep -Milliseconds $WaitMs
     $p.Refresh()
-    [MvCapWin2]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
-    Start-Sleep -Milliseconds 500
-    # 物理ピクセルで座標を扱う（150% 表示などでカーソル位置がずれないように）
-    [MvCapWin2]::SetProcessDPIAware() | Out-Null
     $hwnd = $p.MainWindowHandle
+    # キーは前面の窓へ行くので、ビューアが前面でなければ送らない（他のアプリへ打ち込まないため）。
+    # Windows は他プロセスの前面化を拒むことがあるので、Alt を一度押して許可を得てから出し直す
+    function Ensure-Foreground {
+        for ($n = 0; $n -lt 5; $n++) {
+            if ([MvCapWin3]::GetForegroundWindow() -eq $hwnd) { return }
+            [MvCapWin3]::keybd_event(0x12, 0, 0, [IntPtr]::Zero)
+            [MvCapWin3]::keybd_event(0x12, 0, 2, [IntPtr]::Zero)
+            [MvCapWin3]::SetForegroundWindow($hwnd) | Out-Null
+            Start-Sleep -Milliseconds 300
+        }
+        throw 'ビューアの窓を前面にできないので止めた（キーは送っていない）'
+    }
+    Ensure-Foreground
+    Start-Sleep -Milliseconds 300
+    # 物理ピクセルで座標を扱う（150% 表示などでカーソル位置がずれないように）
+    [MvCapWin3]::SetProcessDPIAware() | Out-Null
     foreach ($k in $Keys) {
+        Ensure-Foreground
         if ($k -match '^(mouse|dblclick|down|up):([\d.]+),([\d.]+)$') {
-            $r = New-Object MvCapWin2+RECT
-            [MvCapWin2]::GetClientRect($hwnd, [ref]$r) | Out-Null
-            $pt = New-Object MvCapWin2+POINT
+            $r = New-Object MvCapWin3+RECT
+            [MvCapWin3]::GetClientRect($hwnd, [ref]$r) | Out-Null
+            $pt = New-Object MvCapWin3+POINT
             $pt.X = [int]($r.R * [double]$Matches[2]); $pt.Y = [int]($r.B * [double]$Matches[3])
-            [MvCapWin2]::ClientToScreen($hwnd, [ref]$pt) | Out-Null
+            [MvCapWin3]::ClientToScreen($hwnd, [ref]$pt) | Out-Null
             # 窓の外から一気に移すと egui がホバーを拾わないことがあるので、すぐ手前を経由する
-            [MvCapWin2]::SetCursorPos($pt.X - 4, $pt.Y - 4) | Out-Null
+            [MvCapWin3]::SetCursorPos($pt.X - 4, $pt.Y - 4) | Out-Null
             Start-Sleep -Milliseconds 150
-            [MvCapWin2]::SetCursorPos($pt.X, $pt.Y) | Out-Null
-            if ($Matches[1] -eq 'down') { [MvCapWin2]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero) }
-            if ($Matches[1] -eq 'up') { [MvCapWin2]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero) }
+            [MvCapWin3]::SetCursorPos($pt.X, $pt.Y) | Out-Null
+            if ($Matches[1] -eq 'down') { [MvCapWin3]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero) }
+            if ($Matches[1] -eq 'up') { [MvCapWin3]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero) }
             if ($Matches[1] -eq 'dblclick') {
                 Start-Sleep -Milliseconds 100
                 foreach ($n in 1..2) {
-                    [MvCapWin2]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero)
-                    [MvCapWin2]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero)
+                    [MvCapWin3]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero)
+                    [MvCapWin3]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero)
                     Start-Sleep -Milliseconds 60
                 }
             }
