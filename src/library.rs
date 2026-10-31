@@ -151,6 +151,15 @@ impl Library {
         self.lru.len()
     }
 
+    /// 表紙テクスチャ（もう読んであれば）。冊を開いた直後の仮表示に使う（#8）。
+    #[must_use]
+    pub fn cover_handle(&self, id: i64) -> Option<egui::TextureHandle> {
+        match self.covers.get(&id) {
+            Some(CoverTex::Ready(tex)) => Some(tex.clone()),
+            _ => None,
+        }
+    }
+
     /// 状態欄の文言（壊れた冊の理由など）。
     pub fn set_status(&mut self, text: impl Into<String>) {
         self.status = Some(text.into());

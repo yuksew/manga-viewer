@@ -158,6 +158,19 @@ fn b1_miss_and_job() {
     let (p95, max) = p95_max(jobs);
     println!("BENCH b1_job_p95_ms {p95:.1}");
     println!("BENCH b1_job_max_ms {max:.1}");
+
+    // #8: 窓（900×1000）に収まるよう縮めて RGBA にするまで（表示が実際に使う経路）
+    let mut fits = Vec::new();
+    for i in 0..200 {
+        let t = Instant::now();
+        let bytes = book.read_page_bytes(i % 100).unwrap();
+        let d = manga_viewer::decode::decode_fit(&bytes, 900, 1000).unwrap();
+        fits.push(ms(t.elapsed()));
+        assert_eq!(d.height, 1000);
+    }
+    let (p95, max) = p95_max(fits);
+    println!("BENCH b1_job_fit_p95_ms {p95:.1}");
+    println!("BENCH b1_job_fit_max_ms {max:.1}");
 }
 
 /// B-4: 冊を開く → 初頁が復号されテクスチャになるまで（28 頁の冊と 1000 エントリの冊）。

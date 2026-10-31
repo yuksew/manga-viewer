@@ -5,10 +5,12 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
+bytemuck = { version = "1.25.2", features = ["extern_crate_alloc"] }
 clap = { version = "4.6.7", features = ["derive"] }
 dirs = "7.0.0"
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
 encoding_rs = "0.8.44"
+fast_image_resize = { version = "6.1.0", features = ["image"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 rayon = "1.12.0"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
@@ -22,3 +24,8 @@ opt-level = 3
 
 [dev-dependencies]
 memory-stats = "1.2.0"
+
+# 依存のジェネリクス（fast_image_resize の縮小など）は呼んだ側のこの crate で実体化されるので、
+# 上の設定だけでは最適化されない。#8 の実測で dev の縮小が 217 ms（release は 1〜2 ms 級）だった。
+[profile.dev.package.manga-viewer]
+opt-level = 1

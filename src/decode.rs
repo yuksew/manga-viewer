@@ -8,7 +8,8 @@
 
 use std::io::Cursor;
 
-use image::{ImageFormat, ImageReader, Limits};
+use fast_image_resize::{self as fir, ResizeOptions, Resizer};
+use image::{DynamicImage, ImageFormat, ImageReader, Limits};
 
 use crate::imgcheck::{self, Kind};
 
@@ -57,6 +58,17 @@ pub struct Decoded {
     pub rgba: Vec<u8>,
     /// 修復して得た結果なら、その種類
     pub repair: Option<Repair>,
+    /// 元画像にアルファが無い（全画素が不透明）。乗算済みと非乗算が同じなので、表示側は変換を省ける
+    pub opaque: bool,
+    /// 縮小前の元画像の寸法（[`decode_fit`] で縮めたときも元の大きさ）
+    pub source_size: (u32, u32),
+}
+
+/// 復号した画像（形式は元のまま。RGBA 化・縮小の前）。
+struct Raw {
+    kind: Kind,
+    img: DynamicImage,
+    repair: Option<Repair>,
 }
 
 fn format_of(kind: Kind) -> ImageFormat {
@@ -86,6 +98,77 @@ fn sniff(b: &[u8]) -> Option<Kind> {
 /// 検証 → 寸法確認 → 復号。形式は拡張子ではなく magic で決める。
 /// 厳密に読めなければ修復を試み、成功時は [`Decoded::repair`] に印を付ける。
 pub fn decode_rgba(bytes: &[u8]) -> Result<Decoded, DecodeError> {
+    let raw = decode_image(bytes)?;
+    let (width, height) = (raw.img.width(), raw.img.height());
+    let opaque = !raw.img.color().has_alpha();
+    Ok(Decoded {
+        kind: raw.kind,
+        width,
+        height,
+        rgba: raw.img.into_rgba8().into_raw(),
+        repair: raw.repair,
+        opaque,
+        source_size: (width, height),
+    })
+}
+
+/// [`decode_rgba`] と同じ検証・修復で復号し、`max_w`×`max_h` に収まるよう縮小して RGBA にする（#8）。
+///
+/// 収まっていれば縮小しない（拡大もしない）。縮小は SIMD（`fast_image_resize`）で、元の画素形式
+/// （グレー / RGB / RGBA）のまま縮めてから RGBA にするので、全画素の変換は縮小後の 1 回だけ。
+pub fn decode_fit(bytes: &[u8], max_w: u32, max_h: u32) -> Result<Decoded, DecodeError> {
+    let raw = decode_image(bytes)?;
+    let source_size = (raw.img.width(), raw.img.height());
+    let opaque = !raw.img.color().has_alpha();
+    let (w, h) = fit_within(source_size, (max_w, max_h));
+    let img = if (w, h) == source_size {
+        raw.img
+    } else {
+        resize(raw.img, w, h)?
+    };
+    Ok(Decoded {
+        kind: raw.kind,
+        width: w,
+        height: h,
+        rgba: img.into_rgba8().into_raw(),
+        repair: raw.repair,
+        opaque,
+        source_size,
+    })
+}
+
+/// 縦横比を保って `max` に収まる寸法（拡大しない・最小 1）。
+#[must_use]
+pub fn fit_within((w, h): (u32, u32), (max_w, max_h): (u32, u32)) -> (u32, u32) {
+    let (max_w, max_h) = (max_w.max(1), max_h.max(1));
+    if w <= max_w && h <= max_h {
+        return (w, h);
+    }
+    let scale = (f64::from(max_w) / f64::from(w)).min(f64::from(max_h) / f64::from(h));
+    let fit = |v: u32, max: u32| ((f64::from(v) * scale).round() as u32).clamp(1, max);
+    (fit(w, max_w), fit(h, max_h))
+}
+
+/// 元の画素形式のまま SIMD で縮める。16 bit などの珍しい形式は 8 bit にしてから縮める。
+fn resize(img: DynamicImage, w: u32, h: u32) -> Result<DynamicImage, DecodeError> {
+    let img = match img {
+        DynamicImage::ImageLuma8(_) | DynamicImage::ImageRgb8(_) | DynamicImage::ImageRgba8(_) => {
+            img
+        }
+        other if other.color().has_alpha() => DynamicImage::ImageRgba8(other.into_rgba8()),
+        other => DynamicImage::ImageRgb8(other.into_rgb8()),
+    };
+    let mut dst = DynamicImage::new(w, h, img.color());
+    let options =
+        ResizeOptions::new().resize_alg(fir::ResizeAlg::Convolution(fir::FilterType::Bilinear));
+    Resizer::new()
+        .resize(&img, &mut dst, &options)
+        .map_err(|e| DecodeError::Decode(format!("縮小できません: {e}")))?;
+    Ok(dst)
+}
+
+/// 検証 → 寸法確認 → 復号（必要なら修復）。RGBA 化はしない。
+fn decode_image(bytes: &[u8]) -> Result<Raw, DecodeError> {
     let strict_err = match decode_strict(bytes) {
         Ok(d) => return Ok(d),
         Err(e) => e,
@@ -135,13 +218,13 @@ fn end_candidates(kind: Kind, b: &[u8]) -> Vec<usize> {
         .collect()
 }
 
-fn decode_strict(bytes: &[u8]) -> Result<Decoded, DecodeError> {
+fn decode_strict(bytes: &[u8]) -> Result<Raw, DecodeError> {
     let kind = imgcheck::check(bytes).map_err(DecodeError::Invalid)?;
     decode_raw(kind, bytes)
 }
 
 /// 寸法確認 → 復号（`imgcheck` は通さない）。
-fn decode_raw(kind: Kind, bytes: &[u8]) -> Result<Decoded, DecodeError> {
+fn decode_raw(kind: Kind, bytes: &[u8]) -> Result<Raw, DecodeError> {
     let format = format_of(kind);
 
     let reader = |limits: Option<Limits>| {
@@ -164,12 +247,9 @@ fn decode_raw(kind: Kind, bytes: &[u8]) -> Result<Decoded, DecodeError> {
     let img = reader(Some(limits))
         .decode()
         .map_err(|e| DecodeError::Decode(e.to_string()))?;
-    let rgba = img.into_rgba8();
-    Ok(Decoded {
+    Ok(Raw {
         kind,
-        width,
-        height,
-        rgba: rgba.into_raw(),
+        img,
         repair: None,
     })
 }
