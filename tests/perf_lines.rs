@@ -294,3 +294,62 @@ fn b3c_covers_and_b2_visible_covers() {
     println!("BENCH b2_visible_covers_ms {:.1}", ms(t.elapsed()));
     println!("INFO b2_visible_covers_count {last}");
 }
+
+/// 実窓の通し（#3）: 合成 724 冊（先頭は 120 頁の実寸の冊、残りは中くらいの表紙 + 小さい頁）を索引・表紙生成し、
+/// release の本体を `--autopilot` で起動する。GPU 転送・窓生成・実プロセスの RSS を含む。
+/// `startup` を 3 回（1 回目は温め）と `reader` を 1 回。本体の `BENCH` 行に加え、プロセスの壁時計も出す。
+#[test]
+#[ignore = "実測用（実際に窓が開く）"]
+fn real_window_autopilot() {
+    let dir = TmpDir::new("rw");
+    let root = dir.0.join("root");
+    let base: Vec<Vec<u8>> = (1..=10).map(manga_png).collect();
+    let pages: Vec<Vec<u8>> = (0..120).map(|i| base[i % 10].clone()).collect();
+    zip_of(&root.join("series000"), "vol0000.zip", &pages);
+    let cover = {
+        let img = image::load_from_memory(&base[0])
+            .unwrap()
+            .thumbnail(750, 1100);
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+        buf.into_inner()
+    };
+    let small = common::png_bytes();
+    let names: Vec<String> = (1..=28).map(|i| format!("{i:03}.png")).collect();
+    for b in 1..724 {
+        let entries: Vec<(&str, &[u8])> = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.as_str(), if i == 0 { &cover[..] } else { &small[..] }))
+            .collect();
+        let path = root.join(format!("series{:03}/vol{b:04}.zip", b / 10));
+        write_zip_data(&path, &entries);
+    }
+    let db = dir.0.join("rw.db");
+    let mut index = Index::open(&db).unwrap();
+    assert_eq!(index.reindex(&root).unwrap().discovered, 724);
+    let covers = index.generate_covers(None, None).unwrap();
+    println!("INFO covers_generated {}", covers.generated);
+    drop(index);
+
+    for scene in ["startup", "startup", "startup", "reader"] {
+        let t = Instant::now();
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_manga-viewer"))
+            .args(["--db".as_ref(), db.as_os_str()])
+            .args(["--root".as_ref(), root.as_os_str()])
+            .args(["--autopilot", scene])
+            .output()
+            .unwrap();
+        let wall = ms(t.elapsed());
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        println!("== {scene}");
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            println!("{line}");
+        }
+        println!("BENCH process_wall_ms {wall:.0}");
+    }
+}

@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, anyhow};
 use eframe::egui;
 
+use crate::autopilot::{Autopilot, Mode, Observed, Probe};
 use crate::book::Book;
 use crate::decode::{self, Decoded};
 use crate::drag::{Drag, DragInput};
@@ -298,6 +299,13 @@ pub struct ViewApp {
     decoded_for: (u32, u32),
     /// 冊を開いた直後、先頭頁ができるまで出す表紙（一覧の表紙テクスチャ）
     placeholder: Option<egui::TextureHandle>,
+    /// 冊を開いた回数（測定で開き直しを見分ける）
+    opens: u64,
+    /// このフレームで頁の画面を描いたか（一覧から開いたフレームは描かない）
+    drew_pages: bool,
+    /// 通し測定（`MV_TRACE=1` か `--autopilot`、#3）
+    probe: Option<Probe>,
+    autopilot: Option<Autopilot>,
 }
 
 impl ViewApp {
@@ -340,6 +348,10 @@ impl ViewApp {
             target: (0, 0),
             decoded_for: (0, 0),
             placeholder: None,
+            opens: 0,
+            drew_pages: false,
+            probe: None,
+            autopilot: None,
         }
     }
 
@@ -412,6 +424,30 @@ impl ViewApp {
         self.inflight.clear();
         self.visible.clear();
         self.generation += 1;
+        self.opens += 1;
+    }
+
+    /// 測定を付ける（#3）。`autopilot` があればキーを注入して場面を再現し、終われば窓を閉じる。
+    #[must_use]
+    pub fn with_probe(mut self, probe: Probe, autopilot: Option<Autopilot>) -> Self {
+        self.probe = Some(probe);
+        self.autopilot = autopilot;
+        self
+    }
+
+    /// 測定が見るこのフレームの状態。
+    fn observed(&self) -> Observed {
+        let drew = self.drew_pages;
+        Observed {
+            in_library: self.in_library(),
+            covers_settled: self.library.as_ref().is_some_and(Library::covers_settled),
+            opens: self.opens,
+            page: self.page,
+            page_ready: drew
+                && !self.visible.is_empty()
+                && self.visible.iter().all(|i| self.cache.contains_key(i)),
+            placeholder: drew && self.placeholder.is_some(),
+        }
     }
 
     /// 次冊/前冊を索引 DB の順で探すようにする（無ければ同フォルダの自然順）。
@@ -582,6 +618,7 @@ impl ViewApp {
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
+        self.drew_pages = false;
         if let Some(deadline) = self.deadline {
             if Instant::now() >= deadline {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -630,6 +667,7 @@ impl ViewApp {
         let width = ctx.content_rect().width();
         let spread = spread_active(self.spread, width);
         self.ensure_loaded(ctx, spread);
+        self.drew_pages = true;
 
         let label = if spread && self.page + 1 < count {
             format!("{}-{}/{}", self.page + 1, self.page + 2, count)
@@ -907,8 +945,40 @@ fn draw_slot(ui: &mut egui::Ui, area: egui::Rect, slot: &Slot) {
 }
 
 impl eframe::App for ViewApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        if let Some(probe) = self.probe.as_mut() {
+            probe.finish_previous(frame.info().cpu_usage);
+        }
         self.show(ui);
+        let observed = self.observed();
+        if let Some(probe) = self.probe.as_mut() {
+            probe.observe(observed);
+            if let Some(autopilot) = self.autopilot.as_mut() {
+                autopilot.after_frame(ui.ctx(), probe);
+            }
+        }
+    }
+
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        let now = Instant::now();
+        if let Some(probe) = self.probe.as_mut() {
+            probe.begin_frame(now);
+        }
+        if let Some(autopilot) = self.autopilot.as_mut() {
+            autopilot.inject(now, &mut raw_input.events);
+        }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // MV_TRACE の普段使いは、閉じるときに要約を出す（autopilot は自分で出す）
+        if let (Some(probe), None) = (&self.probe, &self.autopilot) {
+            for (name, n, p95, max) in probe.summary() {
+                eprintln!("trace	{name}	n={n}	p95={p95:.1}	max={max:.1}");
+            }
+            if let Some(rss) = crate::autopilot::rss_mb() {
+                eprintln!("trace	rss_mb	{rss:.0}");
+            }
+        }
     }
 }
 
@@ -960,13 +1030,32 @@ fn register_font(ctx: &egui::Context, data: Vec<u8>) {
 
 /// 引数なし起動（#1）。索引 DB があって冊が入っていれば一覧、無ければ空の窓（ドロップ待ち）。
 /// 一覧のときは表紙の無い冊の表紙を裏で作り始める。DB が無いときに空の DB を作らない。
-pub fn run_start(db: &Path, root: Option<&Path>) -> anyhow::Result<()> {
+///
+/// `t0` は `main` の先頭の時刻。`MV_TRACE=1` なら起動・冊を開く・頁送りの所要を stderr に出し（#3）、
+/// `autopilot` があればその場面を自動で再現して `BENCH` 行を stdout に出して閉じる。
+pub fn run_start(
+    db: &Path,
+    root: Option<&Path>,
+    t0: Instant,
+    autopilot: Option<Mode>,
+) -> anyhow::Result<()> {
+    let trace = std::env::var_os("MV_TRACE").is_some_and(|v| v == "1");
     if db.exists() {
         let library = Library::open(db, root)?;
         if !library.rows().is_empty() {
             library.spawn_cover_generation();
-            return launch(ViewApp::with_library(library));
+            let mut app = ViewApp::with_library(library);
+            if trace || autopilot.is_some() {
+                app = app.with_probe(Probe::new(t0, trace), autopilot.map(Autopilot::new));
+            }
+            return launch(app);
         }
+    }
+    if autopilot.is_some() {
+        return Err(anyhow!(
+            "--autopilot には冊の入った索引 DB が要ります: {}",
+            db.display()
+        ));
     }
     run_empty(None)
 }
@@ -997,6 +1086,14 @@ pub fn launch(app: ViewApp) -> anyhow::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("manga-viewer")
             .with_inner_size([900.0, 1000.0]),
+        // vsync を切る（#3）。この機の実窓の測定で、vsync 有りは swap が 1 フレームにつき 31〜46 ms
+        // 止まり、冊を開いて 1 頁目が出るまで 96 ms かかった（切ると 24 ms）。Windows の窓表示は
+        // DWM が vblank で合成するので切っても裂けない。egui は入力や要求があるときだけ描くので待機中は回らない。
+        // `MV_VSYNC=1` で戻せる
+        glow_options: eframe::egui_glow::GlowConfiguration {
+            vsync: std::env::var_os("MV_VSYNC").is_some_and(|v| v == "1"),
+            ..Default::default()
+        },
         ..Default::default()
     };
     eframe::run_native(

@@ -78,6 +78,8 @@ pub struct Library {
     /// 前フレームのスクロール位置と見えている高さ（キーで選択を動かしたとき見える所へ送る）
     scroll: (f32, f32),
     scroll_to_selected: bool,
+    /// 前フレームで見えていて、表紙をまだ出せていない（読み待ち・作成待ちの）マスの数
+    covers_pending: usize,
 }
 
 impl Library {
@@ -100,6 +102,7 @@ impl Library {
             thumbs_running: Arc::new(AtomicBool::new(false)),
             scroll: (0.0, 0.0),
             scroll_to_selected: false,
+            covers_pending: 0,
         })
     }
 
@@ -143,6 +146,12 @@ impl Library {
     #[must_use]
     pub fn selected(&self) -> usize {
         self.selected
+    }
+
+    /// 前フレームで見えていたマスの表紙が出そろったか（作れなかった冊は数えない。#3 の測定用）。
+    #[must_use]
+    pub fn covers_settled(&self) -> bool {
+        self.covers_pending == 0
     }
 
     /// 持っている表紙テクスチャの数。
@@ -217,6 +226,7 @@ impl Library {
             }
         }
         let mut budget = COVERS_PER_FRAME;
+        self.covers_pending = 0;
         let mut clicked = None;
         let out = area.show_rows(ui, CELL_H, n_rows, |ui, range| {
             for r in range {
@@ -337,6 +347,9 @@ impl Library {
                 painter.image(tex.id(), r, uv, egui::Color32::WHITE);
             }
             _ => {
+                if !broken && !matches!(self.covers.get(&row.id), Some(CoverTex::Failed)) {
+                    self.covers_pending += 1;
+                }
                 painter.rect_filled(thumb_rect, 4.0, egui::Color32::from_gray(48));
                 if broken {
                     painter.text(

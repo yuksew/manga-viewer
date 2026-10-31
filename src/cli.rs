@@ -153,6 +153,11 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub db: Option<PathBuf>,
 
+    /// 実窓での通し測定（#3）。キーを注入して場面を再現し、`BENCH` 行を出して閉じる。
+    /// 引数なし起動でだけ使え、実データを読まないよう `--db` の指定が要る
+    #[arg(long, value_enum, value_name = "SCENE", requires = "db")]
+    pub autopilot: Option<crate::autopilot::Mode>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }

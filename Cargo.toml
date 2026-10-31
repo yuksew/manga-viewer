@@ -12,6 +12,7 @@ eframe = { version = "0.37.0", default-features = false, features = ["glow", "de
 encoding_rs = "0.8.44"
 fast_image_resize = { version = "6.1.0", features = ["image"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+memory-stats = "1.2.0"
 rayon = "1.12.0"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 thiserror = "2.0.21"
@@ -23,7 +24,6 @@ zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 opt-level = 3
 
 [dev-dependencies]
-memory-stats = "1.2.0"
 
 # 依存のジェネリクス（fast_image_resize の縮小など）は呼んだ側のこの crate で実体化されるので、
 # 上の設定だけでは最適化されない。#8 の実測で dev の縮小が 217 ms（release は 1〜2 ms 級）だった。
