@@ -351,6 +351,8 @@ pub struct ViewApp {
     slider_drag: Option<usize>,
     /// 窓の状態（大きさ・位置・見開き）を次の起動に持ち越すか（#13）。[`ViewApp::persists`] で決まる
     persist: bool,
+    /// このフレームに頁スライダーを出した範囲（その上のダブルクリックは全画面にしない）
+    slider_rect: Option<egui::Rect>,
 }
 
 impl ViewApp {
@@ -429,6 +431,7 @@ impl ViewApp {
             window_title: None,
             slider_drag: None,
             persist: false,
+            slider_rect: None,
         }
     }
 
@@ -730,7 +733,9 @@ impl ViewApp {
         if let Some(path) = dropped {
             self.open_dropped(&path);
         }
+        self.handle_fullscreen(ctx);
         self.update_window_drag(ctx);
+        self.slider_rect = None;
         if let Some(err) = &self.open_error {
             ui.colored_label(egui::Color32::LIGHT_RED, err);
         }
@@ -774,7 +779,12 @@ impl ViewApp {
             _ => format!("{}/{}", self.page + 1, count),
         };
         let mode = mode_label(self.spread, width, spread, self.page, count);
-        ui.label(format!("{label}  [{mode}]"));
+        // 全画面ではタイトルバーが無いので冊名もここに出す
+        if is_fullscreen(ctx) {
+            ui.label(format!("{}  {label}  [{mode}]", self.title));
+        } else {
+            ui.label(format!("{label}  [{mode}]"));
+        }
         if let Some(notice) = self.notice {
             ui.colored_label(egui::Color32::YELLOW, notice);
         }
@@ -853,6 +863,7 @@ impl ViewApp {
                     })
                     .inner
             });
+        self.slider_rect = Some(shown.response.rect);
         let resp = shown.inner;
         // 矢印キーはスライダーではなく頁送りに使うので、フォーカスは持たせない
         if resp.has_focus() {
@@ -877,6 +888,11 @@ impl ViewApp {
     /// 描画領域のどこでも押し下げ＋ドラッグで窓を動かす（状態遷移は [`crate::drag`]、優先順位もそこに明記）。
     /// 移動は OS 任せのドラッグ（`StartDrag`）で、閾値を超えた瞬間に 1 回だけ送る。
     fn update_window_drag(&mut self, ctx: &egui::Context) {
+        // 全画面では窓を動かさない
+        if is_fullscreen(ctx) {
+            self.drag = Drag::default();
+            return;
+        }
         let on_widget = ctx.egui_wants_pointer_input();
         let input = ctx.input(|i| DragInput {
             pressed: i.pointer.primary_pressed(),
@@ -886,6 +902,31 @@ impl ViewApp {
         });
         if self.drag.update(input) {
             ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+    }
+
+    /// 全画面の切り替え（#14）。F11（一覧でも）か、閲覧中の頁の上のダブルクリックで切り替える。
+    /// 全画面中の Esc は全画面を解くだけにする（一覧へ戻る・閉じるは窓のときだけ）。
+    /// スライダーと次冊の確認の上のダブルクリックは対象外（前フレームのスライダーの範囲で判定）。
+    fn handle_fullscreen(&mut self, ctx: &egui::Context) {
+        let full = is_fullscreen(ctx);
+        let f11 = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F11));
+        let esc =
+            full && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        let slider = self.slider_rect;
+        let double = self.book.is_some()
+            && self.prompt.is_none()
+            && ctx.input(|i| {
+                i.pointer
+                    .button_double_clicked(egui::PointerButton::Primary)
+                    && i.pointer
+                        .interact_pos()
+                        .is_some_and(|p| !slider.is_some_and(|r| r.contains(p)))
+            });
+        if f11 || double {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+        } else if esc {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
         }
     }
 
@@ -1005,6 +1046,11 @@ impl ViewApp {
             ctx.request_repaint();
         });
     }
+}
+
+/// 窓が全画面か（分からなければ窓扱い）。
+fn is_fullscreen(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.viewport().fullscreen).unwrap_or(false)
 }
 
 fn ms(t: Instant) -> f64 {

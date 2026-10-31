@@ -9,7 +9,8 @@
 param(
     # 開く冊（zip かフォルダ）。省略すると 5 頁のサンプル冊を作って使う
     [string]$Book,
-    # SendKeys の文字列を順に送る。`shot` は撮影（F12）、`mouse:<x>,<y>` は窓の中身の割合位置（0〜1）へカーソルを動かす
+    # SendKeys の文字列を順に送る。`shot` は撮影（F12）、`mouse:<x>,<y>` は窓の中身の割合位置（0〜1）へカーソルを動かす、
+    # `dblclick:<x>,<y>` はその位置でダブルクリックする
     [string[]]$Keys = @('shot'),
     # target/screenshots/<Name>.png に保存する
     [string]$Name = 'capture',
@@ -26,14 +27,16 @@ $work = Join-Path $env:TEMP "mv-capture-$PID"
 $shots = Join-Path $work 'shots'
 New-Item -ItemType Directory -Force $shots | Out-Null
 Add-Type -AssemblyName System.Drawing, System.Windows.Forms
+# 同じ PowerShell で読み込んだ型は作り直せないので、中身を変えたら型名の番号を上げる
 Add-Type @'
 using System; using System.Runtime.InteropServices;
-public class MvCapWin {
+public class MvCapWin2 {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, IntPtr e);
   public struct RECT { public int L, T, R, B; }
   public struct POINT { public int X, Y; }
 }
@@ -72,22 +75,30 @@ $p = Start-Process -FilePath $exe -ArgumentList @('view', '--path', "`"$Book`"")
 try {
     Start-Sleep -Milliseconds $WaitMs
     $p.Refresh()
-    [MvCapWin]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
+    [MvCapWin2]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
     Start-Sleep -Milliseconds 500
     # 物理ピクセルで座標を扱う（150% 表示などでカーソル位置がずれないように）
-    [MvCapWin]::SetProcessDPIAware() | Out-Null
+    [MvCapWin2]::SetProcessDPIAware() | Out-Null
     $hwnd = $p.MainWindowHandle
     foreach ($k in $Keys) {
-        if ($k -match '^mouse:([\d.]+),([\d.]+)$') {
-            $r = New-Object MvCapWin+RECT
-            [MvCapWin]::GetClientRect($hwnd, [ref]$r) | Out-Null
-            $pt = New-Object MvCapWin+POINT
-            $pt.X = [int]($r.R * [double]$Matches[1]); $pt.Y = [int]($r.B * [double]$Matches[2])
-            [MvCapWin]::ClientToScreen($hwnd, [ref]$pt) | Out-Null
+        if ($k -match '^(mouse|dblclick):([\d.]+),([\d.]+)$') {
+            $r = New-Object MvCapWin2+RECT
+            [MvCapWin2]::GetClientRect($hwnd, [ref]$r) | Out-Null
+            $pt = New-Object MvCapWin2+POINT
+            $pt.X = [int]($r.R * [double]$Matches[2]); $pt.Y = [int]($r.B * [double]$Matches[3])
+            [MvCapWin2]::ClientToScreen($hwnd, [ref]$pt) | Out-Null
             # 窓の外から一気に移すと egui がホバーを拾わないことがあるので、すぐ手前を経由する
-            [MvCapWin]::SetCursorPos($pt.X - 4, $pt.Y - 4) | Out-Null
+            [MvCapWin2]::SetCursorPos($pt.X - 4, $pt.Y - 4) | Out-Null
             Start-Sleep -Milliseconds 150
-            [MvCapWin]::SetCursorPos($pt.X, $pt.Y) | Out-Null
+            [MvCapWin2]::SetCursorPos($pt.X, $pt.Y) | Out-Null
+            if ($Matches[1] -eq 'dblclick') {
+                Start-Sleep -Milliseconds 100
+                foreach ($n in 1..2) {
+                    [MvCapWin2]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero)
+                    [MvCapWin2]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero)
+                    Start-Sleep -Milliseconds 60
+                }
+            }
         } else {
             $send = if ($k -eq 'shot') { '{F12}' } else { $k }
             [System.Windows.Forms.SendKeys]::SendWait($send)

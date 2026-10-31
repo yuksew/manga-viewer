@@ -22,7 +22,9 @@ description: manga-viewer の実窓を撮ってユーザーに見せる（モバ
 & .\.claude\skills\screenshot\capture.ps1 -Book 'D:\books\x.zip' -Keys shot -Name page1
 ```
 
+- PowerShell ツールから `&` で呼ぶ。`powershell -File` 経由だと `-Keys a,b` が配列にならず 1 つの文字列として打ち込まれる。
 - `-Keys` は SendKeys の文字列（`f`、`{RIGHT}`、`{LEFT}`、`{PGDN}`、`{ESC}` など）。`shot` は撮影。
+- `dblclick:<x>,<y>` は同じ位置でダブルクリックする（例: 頁の上で全画面にするなら `dblclick:0.5,0.5`）。
 - `mouse:<x>,<y>` は窓の中身の割合位置（0〜1）へカーソルを動かす。例: 下端の頁スライダーを出すなら `mouse:0.5,0.97`。ユーザーの実カーソルを動かすので、撮影中に一言断っておく。
 - 冊を開く直後の待ちは `-WaitMs`（既定 3000）、キー間は `-StepMs`（既定 800）。重い冊なら延ばす。
 - 一覧画面など `view --path` 以外の起動が要るときは、スクリプトの `Start-Process` の引数を参考に同じ流れを組む（`MV_SCREENSHOT` を付けて起動し、F12 を送る）。
