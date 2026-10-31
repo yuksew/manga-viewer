@@ -1,6 +1,7 @@
 //! CLI（設計 §3.3）。
 //!
-//! * `manga-viewer index <root> [--db <path>]` — 走査して索引 DB に反映し、件数と所要を出す
+//! * `manga-viewer index <root> [--db <path>] [--thumbs]` — 走査して索引 DB に反映し、件数と所要を出す。
+//!   `--thumbs` で表紙サムネイルも作る
 //! * `manga-viewer list [--db <path>]` — 索引 DB の中身を TSV で出す
 //! * `manga-viewer view [--book ID] [--page N]` — 単独ウィンドウで 1 冊を読む（p0-6b）
 //! * `manga-viewer view --path <zip|dir>` — 索引なしで直接開く
@@ -28,7 +29,10 @@ pub fn run(root: Option<PathBuf>, db: Option<PathBuf>, command: &Command) -> any
 /// DB の既定パスを決えずに走らせる（試験用）。
 pub fn execute(root: Option<PathBuf>, db: &Path, command: &Command) -> anyhow::Result<()> {
     match command {
-        Command::Index { root: positional } => {
+        Command::Index {
+            root: positional,
+            thumbs,
+        } => {
             let root = positional
                 .clone()
                 .or(root.clone())
@@ -71,6 +75,16 @@ pub fn execute(root: Option<PathBuf>, db: &Path, command: &Command) -> anyhow::R
                     "broken\t{}\t{}",
                     row.path.display(),
                     flat(&row.error.clone().unwrap_or_default())
+                );
+            }
+            if *thumbs {
+                let covers = index.generate_covers(Some(&root), None)?;
+                println!(
+                    "covers missing={} generated={} failed={} elapsed_ms={}",
+                    covers.missing,
+                    covers.generated,
+                    covers.failed,
+                    covers.elapsed.as_millis(),
                 );
             }
         }
@@ -156,6 +170,9 @@ pub enum Command {
         /// 走査するルート（既定は D:\books）
         #[arg(value_name = "ROOT")]
         root: Option<PathBuf>,
+        /// 索引の後に、表紙が無い冊の表紙サムネイルを作る
+        #[arg(long)]
+        thumbs: bool,
     },
     /// 索引 DB の中身を出す（TSV: id / title / kind / page_count / status / path）
     List,

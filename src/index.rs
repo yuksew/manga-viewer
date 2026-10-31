@@ -13,10 +13,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rayon::prelude::*;
-use rusqlite::{Connection, Row};
+use rusqlite::{Connection, OptionalExtension, Row};
 use thiserror::Error;
 
 use crate::book::Book;
+use crate::cover::{Cover, make_cover};
 use crate::natural::natural_cmp;
 use crate::scan::{self, BookEntry, BookKind, Skipped};
 
@@ -35,7 +36,8 @@ pub const DATA_DIR_NAME: &str = "manga-viewer";
 /// 索引 DB のファイル名。
 pub const DB_FILE_NAME: &str = "index.db";
 
-/// p0-2c が埋める `covers` も先に作っておく（p0-1b の段では空。設計 §2.2）。
+/// `covers` は p0-2c（#2）の `generate_covers` が埋める。`jpeg` が NULL の行は
+/// 「試したが作れなかった」印（毎回作り直さない。冊が更新されると行ごと消える）。
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS books (
     id INTEGER PRIMARY KEY,
@@ -79,6 +81,16 @@ const DELETE_COVER: &str =
 
 const DELETE_BOOK: &str = "DELETE FROM books WHERE id = ?1";
 
+/// 表紙がまだ無い（試してもいない）開ける冊。
+const SELECT_MISSING_COVERS: &str = "SELECT b.id, b.path, b.kind, b.title FROM books b
+LEFT JOIN covers c ON c.book_id = b.id
+WHERE c.book_id IS NULL AND b.status = 'ok'";
+
+const UPSERT_COVER: &str =
+    "INSERT OR REPLACE INTO covers (book_id, w, h, jpeg) VALUES (?1, ?2, ?3, ?4)";
+
+const SELECT_COVER: &str = "SELECT w, h, jpeg FROM covers WHERE book_id = ?1";
+
 /// 索引 DB の失敗。
 #[derive(Error, Debug)]
 pub enum IndexError {
@@ -109,6 +121,8 @@ pub enum IndexError {
     NoHome,
     #[error(transparent)]
     Scan(#[from] std::io::Error),
+    #[error("表紙生成のスレッドプールを作れません: {0}")]
+    Pool(String),
 }
 
 /// 冊の状態（設計 A-6: 壊れた冊は一覧に出る。理由は `error` に入る）。
@@ -206,6 +220,19 @@ impl Report {
     pub fn rescanned(&self) -> usize {
         self.added + self.updated
     }
+}
+
+/// 1 回の表紙生成がやったこと（`index --thumbs` が出す）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CoverReport {
+    /// 表紙が無かった冊の数（`limit` で切る前）。
+    pub missing: usize,
+    /// 作って書いた表紙の数。
+    pub generated: usize,
+    /// 作れなかった冊の数（先頭頁が読めない等。印を残して次回は試さない）。
+    pub failed: usize,
+    /// 所要時間。
+    pub elapsed: Duration,
 }
 
 /// 索引 DB。
@@ -415,6 +442,108 @@ impl Index {
 
         report.elapsed = started.elapsed();
         Ok(report)
+    }
+
+    /// 表紙が無い開ける冊について表紙を作って `covers` に書く（設計 p0-2c、#2）。
+    ///
+    /// 題名の自然順（一覧で先に見える冊から）に、先頭 `limit` 冊まで作る。`root` があればその下だけ。
+    /// 作るのは専用の rayon プール（論理コア数/2、最小 1。設計 §2.2）、書き込みは単一スレッド。
+    /// 既に表紙（または「作れなかった」印）がある冊は飛ばすので、2 回目は 0 件になる。
+    pub fn generate_covers(
+        &mut self,
+        root: Option<&Path>,
+        limit: Option<usize>,
+    ) -> Result<CoverReport, IndexError> {
+        let started = Instant::now();
+        let root_key = root
+            .map(|r| absolute(r).map(|r| path_key(&r)))
+            .transpose()?;
+        let mut todo: Vec<(i64, PathBuf, BookKind, String)> = Vec::new();
+        {
+            let mut stmt = sql("covers", self.conn.prepare(SELECT_MISSING_COVERS))?;
+            let mut rows = sql("covers", stmt.query([]))?;
+            while let Some(row) = sql("covers", rows.next())? {
+                let path = PathBuf::from(sql("covers", row.get::<_, String>(1))?);
+                let Some(kind) = kind_parse(&sql("covers", row.get::<_, String>(2))?) else {
+                    continue;
+                };
+                if root_key
+                    .as_deref()
+                    .is_some_and(|root| !under_root(&path_key(&path), root))
+                {
+                    continue;
+                }
+                todo.push((
+                    sql("covers", row.get(0))?,
+                    path,
+                    kind,
+                    sql("covers", row.get(3))?,
+                ));
+            }
+        }
+        todo.sort_by(|a, b| natural_cmp(&a.3, &b.3).then_with(|| a.1.cmp(&b.1)));
+        let mut report = CoverReport {
+            missing: todo.len(),
+            ..CoverReport::default()
+        };
+        if let Some(n) = limit {
+            todo.truncate(n);
+        }
+
+        let threads = std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).max(1));
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .map_err(|e| IndexError::Pool(e.to_string()))?;
+        for chunk in todo.chunks(BATCH_SIZE) {
+            let made: Vec<Option<Cover>> = pool.install(|| {
+                chunk
+                    .par_iter()
+                    .map(|(_, path, kind, _)| {
+                        let book = Book::open(path, *kind).ok()?;
+                        make_cover(&book).ok()
+                    })
+                    .collect()
+            });
+            let tx = sql("begin", self.conn.transaction())?;
+            {
+                let mut stmt = sql("cover", tx.prepare(UPSERT_COVER))?;
+                for ((id, ..), cover) in chunk.iter().zip(&made) {
+                    let (w, h, jpeg) = match cover {
+                        Some(c) => (Some(c.width), Some(c.height), Some(c.jpeg.as_slice())),
+                        None => (None, None, None),
+                    };
+                    sql("cover", stmt.execute(rusqlite::params![id, w, h, jpeg]))?;
+                }
+            }
+            sql("commit", tx.commit())?;
+            report.generated += made.iter().filter(|c| c.is_some()).count();
+            report.failed += made.iter().filter(|c| c.is_none()).count();
+        }
+        report.elapsed = started.elapsed();
+        Ok(report)
+    }
+
+    /// 冊の表紙。まだ無い・作れなかった冊は `None`。
+    pub fn cover(&self, book_id: i64) -> Result<Option<Cover>, IndexError> {
+        let row = self
+            .conn
+            .query_row(SELECT_COVER, [book_id], |row| {
+                Ok((
+                    row.get::<_, Option<u32>>(0)?,
+                    row.get::<_, Option<u32>>(1)?,
+                    row.get::<_, Option<Vec<u8>>>(2)?,
+                ))
+            })
+            .optional();
+        Ok(match sql("cover", row)? {
+            Some((Some(width), Some(height), Some(jpeg))) => Some(Cover {
+                width,
+                height,
+                jpeg,
+            }),
+            _ => None,
+        })
     }
 
     /// 既に入っている冊を `path` の鍵で引けるようにして返す。

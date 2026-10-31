@@ -1,5 +1,6 @@
 pub mod book;
 pub mod cli;
+pub mod cover;
 pub mod decode;
 pub mod drag;
 pub mod imgcheck;
