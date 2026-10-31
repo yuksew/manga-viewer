@@ -77,6 +77,8 @@ impl Harness {
         if let Some(on) = fullscreen {
             self.full = on;
         }
+        // 上部の頁番号・モードはカーソルを当てたときだけ描くので、表示の文字列も足す（#15）
+        text.push(self.app.status().to_string());
         Frame {
             text: text.join("\n"),
             fullscreen,

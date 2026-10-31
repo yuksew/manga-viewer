@@ -98,6 +98,8 @@ pub fn step(cur: usize, delta: isize, count: usize) -> usize {
 
 /// 窓の下端からこの距離（点）以内にカーソルがあると頁スライダーを出す。
 pub const SLIDER_ZONE: f32 = 72.0;
+/// 窓の上端からこの距離（点）以内にカーソルがあると頁番号・モードの表示を出す（#15）。
+pub const TOP_ZONE: f32 = 48.0;
 /// 頁スライダーの帯の高さ（点）。
 const SLIDER_HEIGHT: f32 = 48.0;
 
@@ -353,6 +355,8 @@ pub struct ViewApp {
     persist: bool,
     /// このフレームに頁スライダーを出した範囲（その上のダブルクリックは全画面にしない）
     slider_rect: Option<egui::Rect>,
+    /// 上部に出す表示の文字列（[`ViewApp::status`]）
+    status: String,
 }
 
 impl ViewApp {
@@ -432,6 +436,7 @@ impl ViewApp {
             slider_drag: None,
             persist: false,
             slider_rect: None,
+            status: String::new(),
         }
     }
 
@@ -780,15 +785,13 @@ impl ViewApp {
         };
         let mode = mode_label(self.spread, width, spread, self.page, count);
         // 全画面ではタイトルバーが無いので冊名もここに出す
-        if is_fullscreen(ctx) {
-            ui.label(format!("{}  {label}  [{mode}]", self.title));
+        self.status = if is_fullscreen(ctx) {
+            format!("{}  {label}  [{mode}]", self.title)
         } else {
-            ui.label(format!("{label}  [{mode}]"));
-        }
-        if let Some(notice) = self.notice {
-            ui.colored_label(egui::Color32::YELLOW, notice);
-        }
-        // 左右の領域を明示的に切り、各頁をその中へ描く（レイアウト任せにしない）
+            format!("{label}  [{mode}]")
+        };
+        // 左右の領域を明示的に切り、各頁をその中へ描く（レイアウト任せにしない）。
+        // 頁番号などの表示は頁の上に重ねるので、頁は窓いっぱいに使う
         let area = ui.available_rect_before_wrap();
         let w = area.width() / self.visible.len().max(1) as f32;
         let n = self.visible.len();
@@ -815,9 +818,56 @@ impl ViewApp {
             };
             draw_slot(ui, rect, slot, align);
         }
+        self.show_top_bar(ctx);
         if self.prompt.is_none() {
             self.show_page_slider(ctx, count);
         }
+    }
+
+    /// 上端にカーソルがある間だけ、頁番号・モード（全画面では冊名も）を頁の上に重ねて出す（#15）。
+    /// 候補が無かったなどの通知はカーソルに関係なく出す（隠さない）。
+    fn show_top_bar(&self, ctx: &egui::Context) {
+        let screen = ctx.content_rect();
+        let near_top = ctx
+            .input(|i| i.pointer.hover_pos())
+            .is_some_and(|p| screen.contains(p) && p.y <= screen.top() + TOP_ZONE);
+        let mut lines = Vec::new();
+        if near_top {
+            lines.push((self.status.clone(), egui::Color32::WHITE));
+        }
+        if let Some(notice) = self.notice {
+            lines.push((notice.to_string(), egui::Color32::YELLOW));
+        }
+        if lines.is_empty() {
+            return;
+        }
+        // Area は初めて出るフレームを寸法取りに使って描かないので、通知が 1 フレーム遅れる。
+        // 帯は最前面のレイヤーへ直接描く
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::unique("top-bar"),
+        ));
+        let font = egui::TextStyle::Body.resolve(&ctx.global_style());
+        let margin = egui::vec2(12.0, 6.0);
+        let galleys: Vec<_> = lines
+            .into_iter()
+            .map(|(text, color)| painter.layout_no_wrap(text, font.clone(), color))
+            .collect();
+        let height = galleys.iter().map(|g| g.size().y).sum::<f32>() + margin.y * 2.0;
+        let bar = egui::Rect::from_min_size(screen.left_top(), egui::vec2(screen.width(), height));
+        painter.rect_filled(bar, 0.0, egui::Color32::from_black_alpha(190));
+        let mut pos = bar.min + margin;
+        for galley in galleys {
+            let h = galley.size().y;
+            painter.galley(pos, galley, egui::Color32::WHITE);
+            pos.y += h;
+        }
+    }
+
+    /// 上部に出す表示（頁番号・モード、全画面では冊名も）。上端にカーソルがあるときだけ見える。
+    #[must_use]
+    pub fn status(&self) -> &str {
+        &self.status
     }
 
     /// 窓の下端にカーソルがある間（とつまんでいる間）だけ、頁スライダーを頁の上に重ねて出す。

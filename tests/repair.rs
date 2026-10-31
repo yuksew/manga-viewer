@@ -106,6 +106,8 @@ fn frame_text(app: &mut ViewApp, key: Option<egui::Key>) -> String {
         collect_text(&clipped.shape, &mut text);
     }
     out.textures_delta.clear();
+    // 上部の頁番号・モードはカーソルを当てたときだけ描くので、表示の文字列も足す（#15）
+    text.push_str(app.status());
     text
 }
 

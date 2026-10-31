@@ -46,14 +46,17 @@ fn frame_w(app: &mut ViewApp, width: f32, events: Vec<egui::Event>) -> String {
     };
     let mut out = ctx.run_ui(raw, |ui| app.show(ui));
     out.textures_delta.clear();
-    out.shapes
+    let mut text: Vec<String> = out
+        .shapes
         .iter()
         .filter_map(|s| match &s.shape {
             egui::epaint::Shape::Text(t) => Some(t.galley.text().to_string()),
             _ => None,
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect();
+    // 上部の頁番号・モードはカーソルを当てたときだけ描くので、表示の文字列も足す（#15）
+    text.push(app.status().to_string());
+    text.join("\n")
 }
 
 fn frame(app: &mut ViewApp, events: Vec<egui::Event>) -> String {

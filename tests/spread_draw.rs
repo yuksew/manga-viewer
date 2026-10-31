@@ -51,6 +51,8 @@ fn run(app: &mut ViewApp, width: f32, events: Vec<egui::Event>) -> (String, Vec<
         }
     }
     rects.sort_by(|a, b| a.min.x.total_cmp(&b.min.x));
+    // 上部の頁番号・モードはカーソルを当てたときだけ描くので、表示の文字列も足す（#15）
+    text.push(app.status().to_string());
     (text.join("\n"), rects)
 }
 

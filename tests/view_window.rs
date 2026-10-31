@@ -59,6 +59,8 @@ fn frame(app: &mut ViewApp, key: Option<egui::Key>) -> (Vec<egui::ColorImage>, S
         collect_text(&clipped.shape, &mut text);
     }
     out.textures_delta.clear(); // 描画しないので未適用の差分を捨てる
+    // 上部の頁番号・モードはカーソルを当てたときだけ描くので、表示の文字列も足す（#15）
+    text.push_str(app.status());
     (images, text)
 }
 
