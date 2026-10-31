@@ -105,7 +105,7 @@ pub fn decode_rgba(bytes: &[u8]) -> Result<Decoded, DecodeError> {
         kind: raw.kind,
         width,
         height,
-        rgba: raw.img.into_rgba8().into_raw(),
+        rgba: into_rgba(raw.img),
         repair: raw.repair,
         opaque,
         source_size: (width, height),
@@ -130,11 +130,29 @@ pub fn decode_fit(bytes: &[u8], max_w: u32, max_h: u32) -> Result<Decoded, Decod
         kind: raw.kind,
         width: w,
         height: h,
-        rgba: img.into_rgba8().into_raw(),
+        rgba: into_rgba(img),
         repair: raw.repair,
         opaque,
         source_size,
     })
+}
+
+/// RGBA のバイト列にする。グレーと RGB は単純な展開で済ませる（#9: image の汎用変換は
+/// グレー → RGBA が 1023×1500 で 9 ms かかり、JPEG の復号と同じくらい重かった。漫画の頁はほぼグレー）。
+#[must_use]
+pub fn into_rgba(img: DynamicImage) -> Vec<u8> {
+    match img {
+        DynamicImage::ImageLuma8(g) => g.into_raw().iter().flat_map(|&v| [v, v, v, 255]).collect(),
+        DynamicImage::ImageRgb8(rgb) => rgb
+            .into_raw()
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|&[r, g, b]| [r, g, b, 255])
+            .collect(),
+        DynamicImage::ImageRgba8(rgba) => rgba.into_raw(),
+        other => other.into_rgba8().into_raw(),
+    }
 }
 
 /// 縦横比を保って `max` に収まる寸法（拡大しない・最小 1）。

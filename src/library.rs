@@ -419,9 +419,9 @@ impl Library {
         let entry = match self.index.as_ref().map(|ix| ix.cover(id)) {
             Some(Ok(Some(c))) => match image::load_from_memory(&c.jpeg) {
                 Ok(img) => {
-                    let rgba = img.into_rgba8();
-                    let size = [rgba.width() as usize, rgba.height() as usize];
-                    let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+                    let size = [img.width() as usize, img.height() as usize];
+                    let rgba = crate::decode::into_rgba(img);
+                    let color = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
                     let tex =
                         ctx.load_texture(format!("cover{id}"), color, egui::TextureOptions::LINEAR);
                     self.remember(id);

@@ -164,3 +164,22 @@ fn step_clamps_to_page_range() {
     assert_eq!(step(9, 0, 5), 4);
     assert_eq!(step(0, 1, 0), 0);
 }
+
+#[test]
+fn into_rgba_matches_image_conversion_for_every_layout() {
+    // #9: グレー / RGB は専用の展開。結果は image の汎用変換と同じであること
+    let gray = image::GrayImage::from_fn(5, 3, |x, y| image::Luma([(x * 40 + y * 7) as u8]));
+    let rgb = image::RgbImage::from_fn(5, 3, |x, y| image::Rgb([x as u8 * 50, y as u8 * 80, 7]));
+    let la = image::GrayAlphaImage::from_fn(5, 3, |x, y| image::LumaA([x as u8 * 50, y as u8 * 9]));
+    for img in [
+        DynamicImage::ImageLuma8(gray),
+        DynamicImage::ImageRgb8(rgb),
+        DynamicImage::ImageLumaA8(la),
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 4]))),
+    ] {
+        assert_eq!(
+            manga_viewer::decode::into_rgba(img.clone()),
+            img.into_rgba8().into_raw()
+        );
+    }
+}
