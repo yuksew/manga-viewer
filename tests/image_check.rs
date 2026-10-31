@@ -1,4 +1,5 @@
-//! 画像ヘッダ検証（p0-4）の試験。壊れた画像は 422、正常画像は 200 + 正しい Content-Type。合成データのみ。
+//! 画像ヘッダ検証（p0-4）の試験。頁ごとに、読める頁は形式（magic）どおりに復号でき、壊れた頁は
+//! view と同じ文言の Err になる。合成データのみ。（serve 経由の試験は #7 で serve ごと削除した）
 
 mod common;
 
@@ -6,9 +7,10 @@ use common::{
     TmpDir, gif_bytes, jpeg_bytes, png_bytes, real_gif_bytes, real_jpeg_bytes, real_webp_bytes,
     webp_bytes, write_zip_data,
 };
+use manga_viewer::book::Book;
 use manga_viewer::imgcheck::{self, Kind};
-use manga_viewer::index::Index;
-use manga_viewer::server::{self, handle};
+use manga_viewer::scan::BookKind;
+use manga_viewer::view::load_page;
 
 fn truncated(mut v: Vec<u8>, cut: usize) -> Vec<u8> {
     v.truncate(v.len() - cut);
@@ -71,22 +73,8 @@ fn check_rejects_garbage_and_bad_headers() {
     assert!(imgcheck::check(&w).is_err());
 }
 
-fn get(index: &Index, path: &str) -> server::Response {
-    handle(
-        index,
-        None,
-        &format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n"),
-    )
-}
-
-fn id_of(index: &Index, title: &str) -> i64 {
-    index
-        .books()
-        .unwrap()
-        .into_iter()
-        .find(|r| r.title == title)
-        .unwrap()
-        .id
+fn open(path: &std::path::Path) -> Book {
+    Book::open(path, BookKind::Zip).unwrap()
 }
 
 /// 2 冊・複数頁。各頁を個別に検証する（良・壊れ・良 / 壊れ・良・良・壊れ・壊れ）。
@@ -118,98 +106,37 @@ fn per_page_verdicts_across_two_books() {
             ("5.webp", &webp_cut),
         ],
     );
-    let mut index = Index::open(&t.0.join("db/index.db")).unwrap();
-    index.reindex(&root).unwrap();
-    let (a, b) = (id_of(&index, "a"), id_of(&index, "b"));
+    let (a, b) = (open(&root.join("a.zip")), open(&root.join("b.zip")));
 
-    // (冊, 頁, 期待: Some((Content-Type, 本体)) か 404)
-    type Want<'a> = Option<(&'a str, &'a Vec<u8>)>;
-    let cases: Vec<(i64, usize, Want)> = vec![
-        (a, 0, Some(("image/png", &png))),
-        (a, 1, None),
-        (a, 2, Some(("image/gif", &gif))),
-        // p0-8a: EOI だけ欠けた JPEG は読める所まで復号して 200（X-MV-Repaired: truncated）
-        (b, 0, Some(("image/jpeg", &jpg_cut))),
-        (b, 1, Some(("image/jpeg", &jpg))),
-        (b, 2, Some(("image/webp", &webp))),
+    // (冊, 頁, 期待: Some(形式) か 読めない)
+    let cases: Vec<(&Book, usize, Option<Kind>)> = vec![
+        (&a, 0, Some(Kind::Png)),
+        (&a, 1, None),
+        (&a, 2, Some(Kind::Gif)),
+        // p0-8a: EOI だけ欠けた JPEG は読める所まで復号する（修復の印つき）
+        (&b, 0, Some(Kind::Jpeg)),
+        (&b, 1, Some(Kind::Jpeg)),
+        (&b, 2, Some(Kind::Webp)),
         // GIF もトレーラ 1 バイト欠けなら全画素が読めるので同様に修復
-        (b, 3, Some(("image/gif", &gif_cut))),
-        (b, 4, None),
+        (&b, 3, Some(Kind::Gif)),
+        (&b, 4, None),
     ];
-    for (id, n, want) in cases {
-        for route in ["page", "image"] {
-            let r = get(&index, &format!("/{route}/{id}/{n}"));
-            match &want {
-                Some((ctype, body)) => {
-                    assert_eq!(
-                        (r.status, r.content_type),
-                        (200, *ctype),
-                        "/{route}/{id}/{n}"
-                    );
-                    assert_eq!(&r.body, *body, "/{route}/{id}/{n}");
-                }
-                None => {
-                    assert_eq!(r.status, 422, "/{route}/{id}/{n}");
-                    assert!(r.content_type.starts_with("text/html"));
-                    assert!(String::from_utf8_lossy(&r.body).contains("この頁は表示できません"));
-                }
-            }
+    for (k, (book, n, want)) in cases.into_iter().enumerate() {
+        match (want, load_page(book, n)) {
+            (Some(kind), Ok(d)) => assert_eq!(d.kind, kind, "case {k}"),
+            (None, Err(msg)) => assert!(!msg.is_empty(), "case {k}"),
+            (want, got) => panic!("case {k}: want {want:?}, got {:?}", got.map(|d| d.kind)),
         }
     }
 }
 
+/// 拡張子が嘘でも、形式は中身（magic）で決まる。
 #[test]
-fn image_route_is_inline_and_page_route_is_not() {
-    let t = TmpDir::new("p0-4-inline");
-    let root = t.0.join("books");
-    write_zip_data(
-        &root.join("a.zip"),
-        &[("1.png", &png_bytes()), ("2.jpg", &real_jpeg_bytes())],
-    );
-    let mut index = Index::open(&t.0.join("db/index.db")).unwrap();
-    index.reindex(&root).unwrap();
-    let a = id_of(&index, "a");
-    let header = |r: &server::Response, k: &str| {
-        r.headers
-            .iter()
-            .find(|(h, _)| *h == k)
-            .map(|(_, v)| v.clone())
-    };
-    let img0 = get(&index, &format!("/image/{a}/0"));
-    assert_eq!(
-        header(&img0, "Content-Disposition").as_deref(),
-        Some("inline; filename=\"1.png\"")
-    );
-    let img1 = get(&index, &format!("/image/{a}/1"));
-    assert_eq!(
-        header(&img1, "Content-Disposition").as_deref(),
-        Some("inline; filename=\"2.jpg\"")
-    );
-    let page = get(&index, &format!("/page/{a}/0"));
-    assert_eq!(header(&page, "Content-Disposition"), None);
-    assert_eq!(
-        header(&page, "X-Content-Type-Options").as_deref(),
-        Some("nosniff")
-    );
-    let wire = String::from_utf8_lossy(&img0.to_bytes()[..200]).into_owned();
-    assert!(wire.contains("Content-Disposition: inline; filename=\"1.png\"\r\n"));
-    // 範囲外・不正
-    assert_eq!(get(&index, &format!("/image/{a}/2")).status, 404);
-    assert_eq!(get(&index, &format!("/image/{a}/-1")).status, 404);
-    assert_eq!(get(&index, "/image/9999/0").status, 404);
-}
-
-/// 拡張子が嘘でも、Content-Type は中身（magic）で決まる。
-#[test]
-fn content_type_follows_magic_not_extension() {
+fn format_follows_magic_not_extension() {
     let t = TmpDir::new("p0-4-ext");
-    let root = t.0.join("books");
-    write_zip_data(&root.join("a.zip"), &[("1.jpg", &png_bytes())]);
-    let mut index = Index::open(&t.0.join("db/index.db")).unwrap();
-    index.reindex(&root).unwrap();
-    let a = id_of(&index, "a");
-    let r = get(&index, &format!("/page/{a}/0"));
-    assert_eq!((r.status, r.content_type), (200, "image/png"));
+    let zip = t.0.join("books/a.zip");
+    write_zip_data(&zip, &[("1.jpg", &png_bytes())]);
+    assert_eq!(load_page(&open(&zip), 0).unwrap().kind, Kind::Png);
 }
 
 // ---- p0-4fix: 監査（p0-4）で生き残った変異 M05/M07/M09/M11/M17 を固定する試験 ----
@@ -273,8 +200,8 @@ fn png_ihdr_length_other_than_13_is_rejected() {
 }
 
 #[test]
-fn body_corrupt_image_is_422_with_view_wording() {
-    // 署名・終端は正しいが IDAT だけ壊れた PNG: imgcheck は通るが復号できない（view と同じ結果になること）
+fn body_corrupt_image_is_a_decode_error() {
+    // 署名・終端は正しいが IDAT だけ壊れた PNG: imgcheck は通るが復号できない
     let mut png = png_bytes();
     let idat = png.windows(4).position(|w| w == b"IDAT").unwrap() + 4;
     for b in &mut png[idat..idat + 6] {
@@ -282,22 +209,8 @@ fn body_corrupt_image_is_422_with_view_wording() {
     }
     assert!(manga_viewer::imgcheck::check(&png).is_ok());
     let t = TmpDir::new("p0-7c-corrupt");
-    let root = t.0.join("books");
-    write_zip_data(&root.join("a.zip"), &[("1.png", &png)]);
-    let mut index = Index::open(&t.0.join("db/index.db")).unwrap();
-    index.reindex(&root).unwrap();
-    let a = id_of(&index, "a");
-    for route in ["page", "image"] {
-        let r = get(&index, &format!("/{route}/{a}/0"));
-        assert_eq!(r.status, 422, "{route}");
-        let body = String::from_utf8_lossy(&r.body).into_owned();
-        assert!(
-            body.contains("この頁は表示できません: 復号できません"),
-            "{body}"
-        );
-        assert!(
-            r.to_bytes()
-                .starts_with(b"HTTP/1.0 422 Unprocessable Entity")
-        );
-    }
+    let zip = t.0.join("books/a.zip");
+    write_zip_data(&zip, &[("1.png", &png)]);
+    let err = load_page(&open(&zip), 0).unwrap_err();
+    assert!(err.contains("復号できません"), "{err}");
 }

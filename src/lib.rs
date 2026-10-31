@@ -9,7 +9,6 @@ pub mod library;
 pub mod natural;
 pub mod neighbor;
 pub mod scan;
-pub mod server;
 pub mod view;
 
 /// 索引ルートの既定値（設計 A-2）。実データ path をコードに書く唯一の場所。

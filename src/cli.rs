@@ -88,12 +88,6 @@ pub fn execute(root: Option<PathBuf>, db: &Path, command: &Command) -> anyhow::R
                 );
             }
         }
-        Command::Serve { port } => {
-            let listener = std::net::TcpListener::bind(("127.0.0.1", *port))?;
-            println!("listening\thttp://{}/", listener.local_addr()?);
-            std::io::Write::flush(&mut std::io::stdout())?;
-            crate::server::serve(listener, db.to_path_buf(), root);
-        }
         Command::View {
             book,
             path,
@@ -184,17 +178,11 @@ pub enum Command {
         /// 索引を使わず zip / フォルダを直接開く（DB 不要。`--book` とは併用不可）
         #[arg(long, value_name = "PATH", conflicts_with = "book")]
         path: Option<PathBuf>,
-        /// 開く頁（0 始まり）。頁数以上なら最後の頁に丸める（`serve` の `?p=` は範囲外 404）
+        /// 開く頁（0 始まり）。頁数以上なら最後の頁に丸める
         #[arg(long, default_value_t = 0)]
         page: usize,
         /// 指定ミリ秒で自動的に閉じる（生存確認用）
         #[arg(long, value_name = "MS", hide = true)]
         exit_after_ms: Option<u64>,
-    },
-    /// 索引の冊をブラウザで読めるようにする（127.0.0.1 のみ。`--root` で冊を絞れる）
-    Serve {
-        /// 待ち受けポート（0 なら空きポート）
-        #[arg(long, default_value_t = 7878)]
-        port: u16,
     },
 }

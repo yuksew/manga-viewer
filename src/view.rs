@@ -884,7 +884,7 @@ pub fn run_empty(exit_after: Option<Duration>) -> anyhow::Result<()> {
 /// 窓を開いて閲覧する。窓が閉じるまで戻らない。`exit_after` があればその時間で自動で閉じる。
 ///
 /// `page`（0 始まり）が頁数以上なら**最後の頁**に丸める（先頭には戻らない・エラーにもしない）。
-/// 頁の無い冊は 0 頁目扱いで、窓は開く。`serve` の `?p=` は範囲外が 404 になる点だけ異なる。
+/// 頁の無い冊は 0 頁目扱いで、窓は開く。
 pub fn run(
     title: String,
     book: Book,

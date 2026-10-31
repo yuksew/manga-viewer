@@ -1,4 +1,4 @@
-//! p0-8a: 破損本体の自動修復（末尾ゴミの切り落とし・末尾欠けの部分復号）と、view / serve の注記。
+//! p0-8a: 破損本体の自動修復（末尾ゴミの切り落とし・末尾欠けの部分復号）と、view の注記。
 
 mod common;
 
@@ -155,18 +155,9 @@ fn view_still_errors_on_unrepairable_page() {
     assert!(!text.contains("修復して表示"), "{text}");
 }
 
-fn header<'a>(r: &'a manga_viewer::server::Response, name: &str) -> Option<&'a str> {
-    r.headers
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case(name))
-        .map(|(_, v)| v.as_str())
-}
-
+/// 修復の種類（serve の X-MV-Repaired ヘッダで見ていた区別。#7 で serve を消したので decode で直接見る）。
 #[test]
-fn serve_marks_repaired_pages_with_header() {
-    use manga_viewer::index::Index;
-    use manga_viewer::server::handle;
-
+fn repair_kinds_per_page() {
     let good = big_jpeg();
     let mut garbage = good.clone();
     garbage.extend_from_slice(b"tail junk");
@@ -175,139 +166,13 @@ fn serve_marks_repaired_pages_with_header() {
     let sof = bad_head.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
     bad_head[sof + 1] = 0x01;
 
-    let t = TmpDir::new("repair-srv");
-    let root = t.0.join("books");
-    write_zip_data(
-        &root.join("a.zip"),
-        &[
-            ("1.jpg", &good),
-            ("2.jpg", &garbage),
-            ("3.jpg", &cut),
-            ("4.jpg", &bad_head),
-        ],
+    assert_eq!(decode_rgba(&good).unwrap().repair, None);
+    assert_eq!(
+        decode_rgba(&garbage).unwrap().repair,
+        Some(Repair::TrailingGarbage { len: good.len() })
     );
-    let mut index = Index::open(&t.0.join("db/index.db")).unwrap();
-    index.reindex(&root).unwrap();
-    let id = index.books().unwrap()[0].id;
-    let get = |n: usize| {
-        handle(
-            &index,
-            None,
-            &format!("GET /page/{id}/{n} HTTP/1.1\r\nHost: x\r\n\r\n"),
-        )
-    };
-
-    let r = get(0);
-    assert_eq!((r.status, header(&r, "X-MV-Repaired")), (200, None));
-    assert_eq!(r.body, good);
-
-    let r = get(1);
-    assert_eq!(r.status, 200);
-    assert_eq!(header(&r, "X-MV-Repaired"), Some("trailing-garbage"));
-    assert_eq!(r.body, good); // 余分な末尾は切って返す
-
-    let r = get(2);
-    assert_eq!(r.status, 200);
-    assert_eq!(header(&r, "X-MV-Repaired"), Some("truncated"));
-    assert_eq!(r.body, cut);
-
-    let r = get(3);
-    assert_eq!(r.status, 422);
-    assert_eq!(header(&r, "X-MV-Repaired"), None);
-}
-
-/// 既知の欠陥（p0-8b 所見 F1）: 後ろの `FFD9` から試すので、ゴミが `FFD9` を含むと切り位置が真の終端より後ろになる。
-/// 画素は正しいので表示には影響しないが、serve が返す本体にゴミが一部残る。
-#[test]
-fn jpeg_garbage_containing_eoi_bytes_is_still_cut_at_true_end() {
-    let good = big_jpeg();
-    let mut bad = good.clone();
-    for _ in 0..3 {
-        bad.extend_from_slice(b"junk\xFF\xD9junk");
-    }
-    let d = decode_rgba(&bad).unwrap();
-    assert_eq!(d.repair, Some(Repair::TrailingGarbage { len: good.len() }));
-}
-
-#[test]
-fn png_garbage_containing_iend_is_still_cut_at_true_end() {
-    let good = small_png();
-    let mut bad = good.clone();
-    for _ in 0..3 {
-        bad.extend_from_slice(b"junkIENDjunkjunk");
-    }
-    let d = decode_rgba(&bad).unwrap();
-    assert_eq!(d.repair, Some(Repair::TrailingGarbage { len: good.len() }));
-}
-
-#[test]
-fn unrepairable_error_is_the_strict_decode_error() {
-    let good = big_jpeg();
-    let sof = good.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
-    let mut bad = good.clone();
-    bad[sof + 1] = 0x01;
-    assert!(matches!(decode_rgba(&bad), Err(DecodeError::Invalid(_))));
-}
-
-/// ゴミに `FFD9` が混じっても、画素は欠けず `TrailingGarbage` として復号できる（F1 の長さ以外の保証）。
-#[test]
-fn jpeg_garbage_containing_eoi_bytes_still_decodes_same_pixels() {
-    let good = big_jpeg();
-    let mut bad = good.clone();
-    for _ in 0..3 {
-        bad.extend_from_slice(b"junk\xFF\xD9junk");
-    }
-    let d = decode_rgba(&bad).unwrap();
-    assert!(matches!(d.repair, Some(Repair::TrailingGarbage { .. })));
-    assert_eq!(d.rgba, decode_rgba(&good).unwrap().rgba);
-}
-
-/// p0-8b 変異 M3c: 注記文言の取り違え（切れ ↔ 余分な末尾）を検出する。
-#[test]
-fn view_note_text_matches_repair_kind() {
-    let good = big_jpeg();
-    let mut garbage = good.clone();
-    garbage.extend_from_slice(b"tail junk");
-    let cut = good[..good.len() - 30].to_vec();
-    let dir = TmpDir::new("repair-note-text");
-    let zip = dir.0.join("b.zip");
-    write_zip_data(&zip, &[("1.jpg", &garbage), ("2.jpg", &cut)]);
-    let book = Book::open(&zip, BookKind::Zip).unwrap();
-    let mut app = ViewApp::new("t".into(), book, 0, None);
-
-    let text = frame_text(&mut app, None);
-    assert!(text.contains("余分なデータ"), "{text}");
-    assert!(!text.contains("途中で切れて"), "{text}");
-    let text = frame_text(&mut app, Some(egui::Key::ArrowRight));
-    assert!(text.contains("途中で切れて"), "{text}");
-    assert!(!text.contains("余分なデータ"), "{text}");
-}
-
-/// F1 修正後: serve の応答本体からもゴミが消え、元の本体と完全一致する（ヘッダは据え置き）。
-#[test]
-fn serve_body_has_garbage_removed_when_garbage_contains_eoi() {
-    use manga_viewer::index::Index;
-    use manga_viewer::server::handle;
-
-    let good = big_jpeg();
-    let mut bad = good.clone();
-    for _ in 0..3 {
-        bad.extend_from_slice(b"junk\xFF\xD9junk");
-    }
-    let t = TmpDir::new("repair-srv-f1");
-    let root = t.0.join("books");
-    write_zip_data(&root.join("a.zip"), &[("1.jpg", &bad)]);
-    let mut index = Index::open(&t.0.join("db/index.db")).unwrap();
-    index.reindex(&root).unwrap();
-    let id = index.books().unwrap()[0].id;
-    let r = handle(
-        &index,
-        None,
-        &format!("GET /page/{id}/0 HTTP/1.1\r\nHost: x\r\n\r\n"),
-    );
-    assert_eq!(r.status, 200);
-    assert_eq!(header(&r, "X-MV-Repaired"), Some("trailing-garbage"));
-    assert_eq!(r.body, good);
+    assert_eq!(decode_rgba(&cut).unwrap().repair, Some(Repair::Truncated));
+    assert!(decode_rgba(&bad_head).is_err());
 }
 
 /// 順序の固定: ヘッダ内（APP15 の中身）に `FFD9` があっても、そこでは切らず真の終端で切る。

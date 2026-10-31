@@ -36,15 +36,6 @@ pub enum Repair {
 }
 
 impl Repair {
-    /// serve の `X-MV-Repaired` ヘッダ値。
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Repair::TrailingGarbage { .. } => "trailing-garbage",
-            Repair::Truncated => "truncated",
-        }
-    }
-
     /// 利用者向けの注記。
     #[must_use]
     pub fn note(self) -> &'static str {
