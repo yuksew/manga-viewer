@@ -190,7 +190,10 @@ fn spread_toggle_shows_two_pages_and_steps_by_two() {
     assert!(frame(&mut app, vec![]).contains("1/5  ["));
     // 1 枚目は表紙として 1 枚で出す
     let text = frame(&mut app, vec![key_event(egui::Key::F)]);
-    assert!(text.contains("1/5  [見開き（表紙は 1 枚）]"), "{text}");
+    assert!(
+        text.contains("1/5  [見開き（表紙は 1 枚・S で組をずらす）]"),
+        "{text}"
+    );
     let text = frame(&mut app, vec![key_event(egui::Key::ArrowRight)]);
     assert!(text.contains("2-3/5  ["), "{text}");
     assert_eq!(app.page(), 1);

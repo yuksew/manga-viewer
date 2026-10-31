@@ -135,7 +135,10 @@ fn f_works_from_text_event_only_and_not_twice() {
     let mut app = app_for(&zip);
     // IME 経由などでキーイベントが無くテキストだけ来た場合
     let (text, _) = run(&mut app, 1000.0, vec![egui::Event::Text("f".into())]);
-    assert!(text.contains("1/3  [見開き（表紙は 1 枚）]"), "{text}");
+    assert!(
+        text.contains("1/3  [見開き（表紙は 1 枚・S で組をずらす）]"),
+        "{text}"
+    );
     // キーとテキストが同じフレームに来ても 1 回だけ切り替わる
     let both = vec![key_event(egui::Key::F), egui::Event::Text("f".into())];
     let (text, _) = run(&mut app, 1000.0, both);

@@ -29,6 +29,8 @@ const APP_NAME: &str = "manga-viewer";
 const STATE_FILE: &str = "window.ron";
 /// 保存ファイルの中の見開きの希望の鍵。
 const SPREAD_KEY: &str = "spread";
+/// 保存ファイルの中の、見開きの組をずらした冊（パスを 1 行ずつ、#16）の鍵。
+const SHIFTED_KEY: &str = "shifted_books";
 
 /// 窓が空のときに出すガイド文言。
 pub const DROP_GUIDE: &str = "ここに zip またはフォルダをドロップ";
@@ -112,33 +114,86 @@ pub fn spread_active(want: bool, width: f32) -> bool {
     want && width >= SPREAD_MIN_WIDTH
 }
 
+/// 頁の並べ方。`bool` からは単頁（`false`）/ 表紙を 1 枚で出す見開き（`true`）になる。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layout {
+    Single,
+    /// 1 枚目を表紙として 1 枚で出し、以降を 2-3, 4-5… で組む（#11、多くの冊は 1 枚目が表紙）
+    Spread,
+    /// 組を 1 頁ずらし、1-2, 3-4… で組む（表紙が 1 枚目でない冊、#16）
+    Shifted,
+}
+
+impl From<bool> for Layout {
+    fn from(spread: bool) -> Self {
+        if spread {
+            Layout::Spread
+        } else {
+            Layout::Single
+        }
+    }
+}
+
+impl Layout {
+    /// 見開きの希望・窓幅・組ずらしから実際の並べ方を決める。
+    #[must_use]
+    pub fn new(want: bool, width: f32, shifted: bool) -> Self {
+        match (spread_active(want, width), shifted) {
+            (false, _) => Layout::Single,
+            (true, false) => Layout::Spread,
+            (true, true) => Layout::Shifted,
+        }
+    }
+
+    fn is_spread(self) -> bool {
+        self != Layout::Single
+    }
+}
+
 /// `page` を含む表示の組（先頭頁, 末尾頁）。単頁なら `(page, page)`。
 /// 見開きは 1 枚目（索引 0）を表紙として 1 枚で出し、以降を索引 1-2, 3-4… で組む（多くの冊は 1 枚目が表紙）。
-/// 最終頁が組の相手を持たなければ 1 枚。
+/// 組ずらし（[`Layout::Shifted`]）は索引 0-1, 2-3… で組む。最終頁が組の相手を持たなければ 1 枚。
 #[must_use]
-pub fn spread_pages(page: usize, spread: bool, count: usize) -> (usize, usize) {
+pub fn spread_pages(page: usize, layout: impl Into<Layout>, count: usize) -> (usize, usize) {
     let last = count.saturating_sub(1);
     let page = page.min(last);
-    if !spread || page == 0 {
-        return (page, page);
-    }
-    // 奇数索引が組の先頭（偶数索引は 1 つ前と組む）
-    let start = page - (page + 1) % 2;
+    let start = match layout.into() {
+        Layout::Single => return (page, page),
+        Layout::Spread if page == 0 => return (0, 0),
+        // 奇数索引が組の先頭（偶数索引は 1 つ前と組む）
+        Layout::Spread => page - (page + 1) % 2,
+        // 偶数索引が組の先頭
+        Layout::Shifted => page - page % 2,
+    };
     (start, (start + 1).min(last))
 }
 
 /// 見開きの状態を窓内に出す文言（切替が効いたか・効かない理由を利用者に見せる）。
 #[must_use]
-pub fn mode_label(want: bool, width: f32, active: bool, page: usize, count: usize) -> String {
-    let (start, end) = spread_pages(page, active, count);
+pub fn mode_label(
+    want: bool,
+    width: f32,
+    active: impl Into<Layout>,
+    page: usize,
+    count: usize,
+) -> String {
+    let layout = active.into();
+    let (start, end) = spread_pages(page, layout, count);
+    let shifted = if layout == Layout::Shifted {
+        "・組ずらし"
+    } else {
+        ""
+    };
     if !want {
         "単頁（F で見開き）".to_string()
-    } else if !active {
+    } else if !layout.is_spread() {
         format!("単頁（窓幅 {width:.0} が {SPREAD_MIN_WIDTH:.0} 未満のため見開きにできません）")
     } else if start == end && start == 0 && count > 1 {
-        "見開き（表紙は 1 枚）".to_string()
+        "見開き（表紙は 1 枚・S で組をずらす）".to_string()
     } else if start == end {
-        "見開き（最終頁は 1 枚）".to_string()
+        format!("見開き{shifted}（最終頁は 1 枚）")
+    } else if layout == Layout::Shifted {
+        "見開き・組ずらし（S で戻す）".to_string()
     } else {
         "見開き（F で単頁）".to_string()
     }
@@ -146,9 +201,10 @@ pub fn mode_label(want: bool, width: f32, active: bool, page: usize, count: usiz
 
 /// 先読みする頁。今の表示の次と前を 1 送り分ずつ、次を先に（範囲内のみ）。
 #[must_use]
-pub fn prefetch_plan(page: usize, spread: bool, count: usize) -> Vec<usize> {
-    let span = if spread { 2 } else { 1 };
-    let (start, end) = spread_pages(page, spread, count);
+pub fn prefetch_plan(page: usize, layout: impl Into<Layout>, count: usize) -> Vec<usize> {
+    let layout = layout.into();
+    let span = if layout.is_spread() { 2 } else { 1 };
+    let (start, end) = spread_pages(page, layout, count);
     let next = (end + 1..end + 1 + span * 2).filter(|&i| i < count);
     let prev = (start.saturating_sub(span * 2)..start).rev();
     next.chain(prev).collect()
@@ -165,6 +221,14 @@ fn spread_toggle_pressed(i: &egui::InputState) -> bool {
     i.key_pressed(egui::Key::F)
         || i.events.iter().any(
             |e| matches!(e, egui::Event::Text(t) if matches!(t.as_str(), "f" | "F" | "ｆ" | "Ｆ")),
+        )
+}
+
+/// S（見開きの組ずらしトグル、#16）が押されたか。F と同じくテキストだけ来る場合も拾う。
+fn shift_toggle_pressed(i: &egui::InputState) -> bool {
+    i.key_pressed(egui::Key::S)
+        || i.events.iter().any(
+            |e| matches!(e, egui::Event::Text(t) if matches!(t.as_str(), "s" | "S" | "ｓ" | "Ｓ")),
         )
 }
 
@@ -258,9 +322,10 @@ pub enum Nav {
 /// 最終頁判定は今の組の末尾（右綴じなので左側の頁）、最初頁判定は組の先頭が 0 か。端の意味は単頁時と変わらない。
 /// 端を越えるのは今いる組が端のときだけで、複数回の送りが途中で端に着いたらそこで止まる。
 #[must_use]
-pub fn plan_nav(page: usize, delta: isize, spread: bool, count: usize) -> Nav {
+pub fn plan_nav(page: usize, delta: isize, layout: impl Into<Layout>, count: usize) -> Nav {
+    let layout = layout.into();
     let last = count.saturating_sub(1);
-    let (mut start, mut end) = spread_pages(page, spread, count);
+    let (mut start, mut end) = spread_pages(page, layout, count);
     if delta > 0 && end >= last {
         return Nav::Prompt(NavDir::Next);
     }
@@ -269,9 +334,9 @@ pub fn plan_nav(page: usize, delta: isize, spread: bool, count: usize) -> Nav {
     }
     for _ in 0..delta.unsigned_abs() {
         (start, end) = if delta > 0 && end < last {
-            spread_pages(end + 1, spread, count)
+            spread_pages(end + 1, layout, count)
         } else if delta < 0 && start > 0 {
-            spread_pages(start - 1, spread, count)
+            spread_pages(start - 1, layout, count)
         } else {
             break;
         };
@@ -357,6 +422,10 @@ pub struct ViewApp {
     slider_rect: Option<egui::Rect>,
     /// 上部に出す表示の文字列（[`ViewApp::status`]）
     status: String,
+    /// 今の冊の見開きの組をずらしているか（#16）
+    shifted: bool,
+    /// 組をずらした冊のパス。冊を開くたびにここから [`ViewApp::shifted`] を決め、終了時に保存する
+    shifted_books: HashSet<PathBuf>,
 }
 
 impl ViewApp {
@@ -394,6 +463,44 @@ impl ViewApp {
         if let Some(v) = storage.get_string(SPREAD_KEY) {
             self.spread = v == "1";
         }
+        if let Some(v) = storage.get_string(SHIFTED_KEY) {
+            self.shifted_books = v
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(PathBuf::from)
+                .collect();
+        }
+        self.shifted = self.book_is_shifted();
+    }
+
+    /// 今の冊の見開きの組をずらしているか（#16）。
+    #[must_use]
+    pub fn shifted(&self) -> bool {
+        self.shifted
+    }
+
+    fn book_is_shifted(&self) -> bool {
+        self.book
+            .as_deref()
+            .is_some_and(|b| self.shifted_books.contains(b.path()))
+    }
+
+    /// 見開きの組ずらしを切り替え、冊ごとに覚える。
+    fn toggle_shift(&mut self) {
+        let Some(path) = self.book.as_deref().map(|b| b.path().to_path_buf()) else {
+            return;
+        };
+        self.shifted = !self.shifted;
+        if self.shifted {
+            self.shifted_books.insert(path);
+        } else {
+            self.shifted_books.remove(&path);
+        }
+    }
+
+    /// 窓幅 `width` での並べ方。
+    fn layout(&self, width: f32) -> Layout {
+        Layout::new(self.spread, width, self.shifted)
     }
 
     /// 見開きの希望（窓が狭いと実際は単頁）。
@@ -437,6 +544,8 @@ impl ViewApp {
             persist: false,
             slider_rect: None,
             status: String::new(),
+            shifted: false,
+            shifted_books: HashSet::new(),
         }
     }
 
@@ -501,6 +610,7 @@ impl ViewApp {
         self.placeholder = None;
         self.title = title;
         self.book = Some(Arc::new(book));
+        self.shifted = self.book_is_shifted();
         self.page = 0;
         self.prompt = None;
         self.notice = None;
@@ -775,15 +885,15 @@ impl ViewApp {
             return;
         };
         let width = ctx.content_rect().width();
-        let spread = spread_active(self.spread, width);
-        self.ensure_loaded(ctx, spread);
+        let layout = self.layout(width);
+        self.ensure_loaded(ctx, layout);
         self.drew_pages = true;
 
         let label = match (self.visible.first(), self.visible.last()) {
             (Some(a), Some(b)) if a != b => format!("{}-{}/{}", a + 1, b + 1, count),
             _ => format!("{}/{}", self.page + 1, count),
         };
-        let mode = mode_label(self.spread, width, spread, self.page, count);
+        let mode = mode_label(self.spread, width, layout, self.page, count);
         // 全画面ではタイトルバーが無いので冊名もここに出す
         self.status = if is_fullscreen(ctx) {
             format!("{}  {label}  [{mode}]", self.title)
@@ -992,6 +1102,9 @@ impl ViewApp {
         if ctx.input(spread_toggle_pressed) {
             self.spread = !self.spread;
         }
+        if ctx.input(shift_toggle_pressed) {
+            self.toggle_shift();
+        }
         // 窓移動中はキー/ホイールの頁送りを出さない
         let delta = if self.drag.is_moving() {
             0
@@ -1002,9 +1115,9 @@ impl ViewApp {
             return;
         }
         let count = self.book.as_deref().map_or(0, Book::page_count);
-        let spread = spread_active(self.spread, ctx.content_rect().width());
+        let layout = self.layout(ctx.content_rect().width());
         self.notice = None;
-        match plan_nav(self.page, delta, spread, count) {
+        match plan_nav(self.page, delta, layout, count) {
             Nav::Page(p) => self.page = p,
             Nav::Prompt(dir) => self.prompt = Some(dir),
         }
@@ -1031,7 +1144,7 @@ impl ViewApp {
 
     /// 表示する頁を揃え（無ければ復号）、次/前を裏で先読みし、遠い頁を捨てる。
     /// キャッシュは頁番号キーなので、F の切替では既に読んだ頁を再復号しない。
-    fn ensure_loaded(&mut self, ctx: &egui::Context, spread: bool) {
+    fn ensure_loaded(&mut self, ctx: &egui::Context, layout: Layout) {
         let Some(book) = self.book.clone() else {
             return;
         };
@@ -1047,7 +1160,7 @@ impl ViewApp {
         }
         let target = self.decoded_for;
         // 見開きでは組の先頭に揃える（単頁から F で切り替えたときなど）
-        let (start, end) = spread_pages(self.page, spread, count);
+        let (start, end) = spread_pages(self.page, layout, count);
         self.page = start;
         self.visible = (start..=end).collect();
         // 表紙を仮表示している先頭頁は待たずに裏で復号し、届いたフレームで差し替える
@@ -1076,7 +1189,7 @@ impl ViewApp {
             }
         }
         self.drain(ctx, None);
-        for i in prefetch_plan(self.page, spread, count) {
+        for i in prefetch_plan(self.page, layout, count) {
             self.spawn_load(ctx, &book, i, target);
         }
         let keep = keep_range(self.page, count);
@@ -1261,6 +1374,13 @@ impl eframe::App for ViewApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         if self.persist {
             storage.set_string(SPREAD_KEY, if self.spread { "1" } else { "0" }.to_string());
+            let mut books: Vec<String> = self
+                .shifted_books
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            books.sort();
+            storage.set_string(SHIFTED_KEY, books.join("\n"));
         }
     }
 
