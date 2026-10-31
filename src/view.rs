@@ -3,7 +3,10 @@
 //! 1 冊を開いて 1 頁を窓に収めて表示し、→/PageDown/Space で次、←/PageUp で前、Esc で終了。
 //! 復号は [`crate::decode`]（`imgcheck` を通ったバイトだけ）。壊れた頁は画像を出さずエラー文言を出す。
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
@@ -91,6 +94,43 @@ pub fn spread_active(want: bool, width: f32) -> bool {
     want && width >= SPREAD_MIN_WIDTH
 }
 
+/// 見開きの状態を窓内に出す文言（切替が効いたか・効かない理由を利用者に見せる）。
+#[must_use]
+pub fn mode_label(want: bool, width: f32, active: bool, page: usize, count: usize) -> String {
+    if !want {
+        "単頁（F で見開き）".to_string()
+    } else if !active {
+        format!("単頁（窓幅 {width:.0} が {SPREAD_MIN_WIDTH:.0} 未満のため見開きにできません）")
+    } else if page + 1 >= count {
+        "見開き（最終頁は 1 枚）".to_string()
+    } else {
+        "見開き（F で単頁）".to_string()
+    }
+}
+
+/// 先読みする頁。今の表示の次と前を 1 送り分ずつ、次を先に（範囲内のみ）。
+#[must_use]
+pub fn prefetch_plan(page: usize, spread: bool, count: usize) -> Vec<usize> {
+    let span = if spread { 2 } else { 1 };
+    let next = (page + span..page + span * 3).filter(|&i| i < count);
+    let prev = (page.saturating_sub(span * 2)..page).rev();
+    next.chain(prev).collect()
+}
+
+/// キャッシュに残す頁の範囲（表示中の前後）。外は捨ててメモリを抑える。
+#[must_use]
+pub fn keep_range(page: usize, count: usize) -> std::ops::Range<usize> {
+    page.saturating_sub(6)..(page + 8).min(count)
+}
+
+/// F（見開きトグル）が押されたか。IME 等でキーイベントが来ずテキストだけ来る場合も拾う。
+fn spread_toggle_pressed(i: &egui::InputState) -> bool {
+    i.key_pressed(egui::Key::F)
+        || i.events.iter().any(
+            |e| matches!(e, egui::Event::Text(t) if matches!(t.as_str(), "f" | "F" | "ｆ" | "Ｆ")),
+        )
+}
+
 /// このフレームの入力から頁送りの向きと量を決める（次 +1 / 前 -1）。
 ///
 /// キーが押されていればキーだけを数え、ホイールは見ない（二重計上しない）。
@@ -147,7 +187,7 @@ fn load_rows(db: &Path, root: Option<&Path>) -> Option<Vec<BookRow>> {
     .ok()
 }
 
-/// 表示中の 1 頁分（見開きでは左右 2 つ）。
+/// 復号済みの 1 頁分（テクスチャ化済み）。頁番号ごとにキャッシュし、F の切替や頁戻しで再復号しない。
 #[derive(Default)]
 struct Slot {
     texture: Option<egui::TextureHandle>,
@@ -156,10 +196,13 @@ struct Slot {
     note: Option<&'static str>,
 }
 
+/// 裏スレッドで復号した結果（世代, 頁, 読み出し ms, 結果）。
+type Loaded = (u64, usize, f64, Result<Decoded, String>);
+
 pub struct ViewApp {
     title: String,
     /// 開いている冊。空の窓（ドロップ待ち）では `None`
-    book: Option<Book>,
+    book: Option<Arc<Book>>,
     page: usize,
     /// 見開きの希望（窓が狭いと実際は単頁）
     spread: bool,
@@ -171,11 +214,19 @@ pub struct ViewApp {
     index: Option<(PathBuf, Option<PathBuf>)>,
     /// ドロップで開けなかったときの文言
     open_error: Option<String>,
-    slots: Vec<Slot>,
+    /// 頁番号 → 復号済みの頁
+    cache: HashMap<usize, Slot>,
+    /// 裏で復号中の頁
+    inflight: HashSet<usize>,
+    /// 冊を替えるたびに増やす。古い冊の先読み結果を捨てる
+    generation: u64,
+    sync_loads: usize,
+    tx: Sender<Loaded>,
+    rx: Receiver<Loaded>,
+    /// 今表示している頁（左から）
+    visible: Vec<usize>,
     /// 窓ドラッグ移動の状態
     drag: Drag,
-    /// 読み込み済みの（左頁, 見開きか）
-    loaded: Option<(usize, bool)>,
     deadline: Option<Instant>,
 }
 
@@ -186,7 +237,7 @@ impl ViewApp {
         let page = step(page, 0, book.page_count());
         Self {
             title,
-            book: Some(book),
+            book: Some(Arc::new(book)),
             page,
             deadline: exit_after.map(|d| Instant::now() + d),
             ..Self::empty()
@@ -196,6 +247,7 @@ impl ViewApp {
     /// 冊のない空の窓（ドロップ待ち）。
     #[must_use]
     pub fn empty() -> Self {
+        let (tx, rx) = mpsc::channel();
         Self {
             title: String::new(),
             book: None,
@@ -205,9 +257,14 @@ impl ViewApp {
             notice: None,
             index: None,
             open_error: None,
-            slots: Vec::new(),
+            cache: HashMap::new(),
+            inflight: HashSet::new(),
+            generation: 0,
+            sync_loads: 0,
+            tx,
+            rx,
+            visible: Vec::new(),
             drag: Drag::default(),
-            loaded: None,
             deadline: None,
         }
     }
@@ -231,6 +288,18 @@ impl ViewApp {
         self.page
     }
 
+    /// 復号済みでキャッシュにある頁数。
+    #[must_use]
+    pub fn cached_pages(&self) -> usize {
+        self.cache.len()
+    }
+
+    /// 表示のために同期で復号した回数（先読みが間に合わなかった数）。
+    #[must_use]
+    pub fn sync_loads(&self) -> usize {
+        self.sync_loads
+    }
+
     /// 開いている冊の表示名。
     #[must_use]
     pub fn title(&self) -> &str {
@@ -242,13 +311,15 @@ impl ViewApp {
         match open_path(path) {
             Ok((title, book)) => {
                 self.title = title;
-                self.book = Some(book);
+                self.book = Some(Arc::new(book));
                 self.page = 0;
                 self.prompt = None;
                 self.notice = None;
                 self.open_error = None;
-                self.slots.clear();
-                self.loaded = None;
+                self.cache.clear();
+                self.inflight.clear();
+                self.visible.clear();
+                self.generation += 1;
             }
             Err(err) => self.open_error = Some(format!("{err:#}")),
         }
@@ -341,10 +412,11 @@ impl ViewApp {
         if let Some(dir) = self.prompt {
             self.show_prompt(ui, dir, was_prompting);
         }
-        let Some(count) = self.book.as_ref().map(Book::page_count) else {
+        let Some(count) = self.book.as_deref().map(Book::page_count) else {
             return;
         };
-        let spread = spread_active(self.spread, ctx.content_rect().width());
+        let width = ctx.content_rect().width();
+        let spread = spread_active(self.spread, width);
         self.ensure_loaded(ctx, spread);
 
         let label = if spread && self.page + 1 < count {
@@ -352,18 +424,21 @@ impl ViewApp {
         } else {
             format!("{}/{}", self.page + 1, count)
         };
-        ui.label(format!("{}  {label}", self.title));
+        let mode = mode_label(self.spread, width, spread, self.page, count);
+        ui.label(format!("{}  {label}  [{mode}]", self.title));
         if let Some(notice) = self.notice {
             ui.colored_label(egui::Color32::YELLOW, notice);
         }
-        if self.slots.len() == 2 {
-            ui.columns(2, |cols| {
-                for (col, slot) in cols.iter_mut().zip(&self.slots) {
-                    draw_slot(col, slot);
-                }
-            });
-        } else if let Some(slot) = self.slots.first() {
-            draw_slot(ui, slot);
+        // 左右の領域を明示的に切り、各頁をその中へ描く（レイアウト任せにしない）
+        let area = ui.available_rect_before_wrap();
+        let w = area.width() / self.visible.len().max(1) as f32;
+        for (k, i) in self.visible.iter().enumerate() {
+            let Some(slot) = self.cache.get(i) else {
+                continue;
+            };
+            let min = area.min + egui::vec2(w * k as f32, 0.0);
+            let rect = egui::Rect::from_min_size(min, egui::vec2(w, area.height()));
+            draw_slot(ui, rect, slot);
         }
     }
 
@@ -387,7 +462,7 @@ impl ViewApp {
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::F)) {
+        if ctx.input(spread_toggle_pressed) {
             self.spread = !self.spread;
         }
         // 窓移動中はキー/ホイールの頁送りを出さない
@@ -399,7 +474,7 @@ impl ViewApp {
         if delta == 0 {
             return;
         }
-        let count = self.book.as_ref().map_or(0, Book::page_count);
+        let count = self.book.as_deref().map_or(0, Book::page_count);
         let spread = spread_active(self.spread, ctx.content_rect().width());
         self.notice = None;
         match plan_nav(self.page, delta, spread, count) {
@@ -408,55 +483,137 @@ impl ViewApp {
         }
     }
 
-    fn ensure_loaded(&mut self, ctx: &egui::Context, spread: bool) {
-        if self.loaded == Some((self.page, spread)) {
-            return;
+    /// 裏スレッドの完了分を取り込む。`wait` の頁が復号中なら届くまで待つ。
+    fn drain(&mut self, ctx: &egui::Context, wait: Option<usize>) {
+        loop {
+            let msg = match wait.filter(|w| self.inflight.contains(w)) {
+                Some(_) => self.rx.recv().ok(),
+                None => self.rx.try_recv().ok(),
+            };
+            let Some((generation, i, read_ms, res)) = msg else {
+                return;
+            };
+            if generation != self.generation {
+                continue;
+            }
+            self.inflight.remove(&i);
+            self.cache
+                .insert(i, upload(ctx, i, read_ms, res, "prefetch"));
         }
-        self.loaded = Some((self.page, spread));
-        self.slots.clear();
-        let Some(book) = &self.book else { return };
-        let last = book.page_count().saturating_sub(1);
+    }
+
+    /// 表示する頁を揃え（無ければ復号）、次/前を裏で先読みし、遠い頁を捨てる。
+    /// キャッシュは頁番号キーなので、F の切替では既に読んだ頁を再復号しない。
+    fn ensure_loaded(&mut self, ctx: &egui::Context, spread: bool) {
+        let Some(book) = self.book.clone() else {
+            return;
+        };
+        let count = book.page_count();
         let upto = if spread {
-            (self.page + 1).min(last)
+            (self.page + 1).min(count - 1)
         } else {
             self.page
         };
-        for i in self.page..=upto {
-            let mut slot = Slot::default();
-            match load_page(book, i) {
-                Ok(img) => {
-                    let size = [img.width as usize, img.height as usize];
-                    let color = egui::ColorImage::from_rgba_unmultiplied(size, &img.rgba);
-                    let name = format!("page{}", i - self.page);
-                    slot.texture =
-                        Some(ctx.load_texture(name, color, egui::TextureOptions::LINEAR));
-                    slot.note = img.repair.map(decode::Repair::note);
-                }
-                Err(msg) => slot.error = Some(msg),
+        self.visible = (self.page..=upto).collect();
+        for i in self.visible.clone() {
+            self.drain(ctx, Some(i));
+            if !self.cache.contains_key(&i) {
+                let (read_ms, res) = read_and_decode(&book, i);
+                self.sync_loads += 1;
+                self.cache.insert(i, upload(ctx, i, read_ms, res, "sync"));
             }
-            self.slots.push(slot);
         }
+        self.drain(ctx, None);
+        for i in prefetch_plan(self.page, spread, count) {
+            if self.cache.contains_key(&i) || !self.inflight.insert(i) {
+                continue;
+            }
+            let (book, tx, ctx, generation) =
+                (book.clone(), self.tx.clone(), ctx.clone(), self.generation);
+            rayon::spawn(move || {
+                let (read_ms, res) = read_and_decode(&book, i);
+                let _ = tx.send((generation, i, read_ms, res));
+                ctx.request_repaint();
+            });
+        }
+        let keep = keep_range(self.page, count);
+        self.cache.retain(|i, _| keep.contains(i));
     }
 }
 
-/// 1 頁分を `ui` の空き領域に収めて描く。
-fn draw_slot(ui: &mut egui::Ui, slot: &Slot) {
-    if let Some(msg) = &slot.error {
-        ui.colored_label(
-            egui::Color32::LIGHT_RED,
-            format!("この頁は表示できません: {msg}"),
-        );
-    } else if let Some(tex) = &slot.texture {
-        if let Some(note) = slot.note {
-            ui.colored_label(egui::Color32::YELLOW, format!("修復して表示: {note}"));
+fn ms(t: Instant) -> f64 {
+    t.elapsed().as_secs_f64() * 1000.0
+}
+
+/// 頁のバイトを読んで復号し、読み出し ms と結果を返す（復号 ms は stderr に出す）。
+fn read_and_decode(book: &Book, i: usize) -> (f64, Result<Decoded, String>) {
+    let t = Instant::now();
+    let bytes = match book.read_page_bytes(i) {
+        Ok(b) => b,
+        Err(e) => return (ms(t), Err(e.to_string())),
+    };
+    let read_ms = ms(t);
+    let t = Instant::now();
+    let res = decode::decode_rgba(&bytes).map_err(|e| e.to_string());
+    eprintln!(
+        "page\t{}\tdecode {:.1} ms\t({} KB)",
+        i + 1,
+        ms(t),
+        bytes.len() / 1024
+    );
+    (read_ms, res)
+}
+
+/// 復号結果をテクスチャにして頁キャッシュの 1 項目にする。`src` は統計行用（sync/prefetch）。
+fn upload(
+    ctx: &egui::Context,
+    i: usize,
+    read_ms: f64,
+    res: Result<Decoded, String>,
+    src: &str,
+) -> Slot {
+    let mut slot = Slot::default();
+    match res {
+        Ok(img) => {
+            let t = Instant::now();
+            let size = [img.width as usize, img.height as usize];
+            let color = egui::ColorImage::from_rgba_unmultiplied(size, &img.rgba);
+            let name = format!("page{i}");
+            slot.texture = Some(ctx.load_texture(name, color, egui::TextureOptions::LINEAR));
+            slot.note = img.repair.map(decode::Repair::note);
+            eprintln!(
+                "page\t{}\t{src}\tread {read_ms:.1} ms\ttexture {:.1} ms (CPU 側)",
+                i + 1,
+                ms(t)
+            );
         }
-        let avail = ui.available_size();
-        let size = tex.size_vec2();
-        let scale = (avail.x / size.x).min(avail.y / size.y).min(1.0);
-        ui.centered_and_justified(|ui| {
-            ui.add(egui::Image::new((tex.id(), size * scale)));
-        });
+        Err(msg) => slot.error = Some(msg),
     }
+    slot
+}
+
+/// 1 頁分を `area` の中に収めて描く（エラー/修復の注記は上、画像は残りの中央）。
+fn draw_slot(ui: &mut egui::Ui, area: egui::Rect, slot: &Slot) {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+        if let Some(msg) = &slot.error {
+            ui.colored_label(
+                egui::Color32::LIGHT_RED,
+                format!("この頁は表示できません: {msg}"),
+            );
+        } else if let Some(tex) = &slot.texture {
+            if let Some(note) = slot.note {
+                ui.colored_label(egui::Color32::YELLOW, format!("修復して表示: {note}"));
+            }
+            let avail = ui.available_rect_before_wrap();
+            let size = tex.size_vec2();
+            let scale = (avail.width() / size.x)
+                .min(avail.height() / size.y)
+                .min(1.0);
+            let rect = egui::Rect::from_center_size(avail.center(), size * scale);
+            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            ui.painter().image(tex.id(), rect, uv, egui::Color32::WHITE);
+        }
+    });
 }
 
 impl eframe::App for ViewApp {

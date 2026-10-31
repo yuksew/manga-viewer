@@ -1,0 +1,137 @@
+//! p0-14: 見開きの実機不具合の回帰（描画された画像の枚数・位置、F の入力経路、状態表示、キャッシュ）。
+
+mod common;
+
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+use common::{TmpDir, write_zip};
+use eframe::egui;
+use manga_viewer::view::{
+    SPREAD_MIN_WIDTH, ViewApp, keep_range, mode_label, open_path, prefetch_plan,
+};
+
+fn key_event(key: egui::Key) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+fn app_for(path: &Path) -> ViewApp {
+    let (title, book) = open_path(path).unwrap();
+    ViewApp::new(title, book, 0, None)
+}
+
+/// 幅 `width` の窓で 1 フレーム回し、(描画された全文字列, 画像の矩形を左から順に) を返す。
+fn run(app: &mut ViewApp, width: f32, events: Vec<egui::Event>) -> (String, Vec<egui::Rect>) {
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(width, 800.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(raw, |ui| app.show(ui));
+    out.textures_delta.clear();
+    let mut text = Vec::new();
+    let mut rects = Vec::new();
+    for s in &out.shapes {
+        match &s.shape {
+            egui::epaint::Shape::Text(t) => text.push(t.galley.text().to_string()),
+            egui::epaint::Shape::Mesh(m) if m.texture_id != egui::TextureId::default() => {
+                rects.push(m.calc_bounds());
+            }
+            _ => {}
+        }
+    }
+    rects.sort_by(|a, b| a.min.x.total_cmp(&b.min.x));
+    (text.join("\n"), rects)
+}
+
+fn zip_of(tag: &str, n: usize) -> (TmpDir, std::path::PathBuf) {
+    let dir = TmpDir::new(tag);
+    let names: Vec<String> = (1..=n).map(|i| format!("{i}.png")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let zip = dir.0.join("a.zip");
+    write_zip(&zip, &refs);
+    (dir, zip)
+}
+
+#[test]
+fn spread_draws_two_images_side_by_side_at_real_window_widths() {
+    let (_dir, zip) = zip_of("sd-draw", 3);
+    // 実機の既定幅 900 でも、閾値ちょうどでも 2 枚（左右の半分ずつ）
+    for width in [900.0, SPREAD_MIN_WIDTH] {
+        let mut app = app_for(&zip);
+        assert_eq!(run(&mut app, width, vec![]).1.len(), 1);
+        let (_, rects) = run(&mut app, width, vec![key_event(egui::Key::F)]);
+        assert_eq!(rects.len(), 2, "width {width}: {rects:?}");
+        assert!(rects[0].max.x <= width / 2.0 + 0.5, "{rects:?}");
+        assert!(rects[1].min.x >= width / 2.0 - 0.5, "{rects:?}");
+    }
+}
+
+#[test]
+fn f_works_from_text_event_only_and_not_twice() {
+    let (_dir, zip) = zip_of("sd-text", 3);
+    let mut app = app_for(&zip);
+    // IME 経由などでキーイベントが無くテキストだけ来た場合
+    let (text, _) = run(&mut app, 1000.0, vec![egui::Event::Text("f".into())]);
+    assert!(text.contains("1-2/3") && text.contains("見開き"), "{text}");
+    // キーとテキストが同じフレームに来ても 1 回だけ切り替わる
+    let both = vec![key_event(egui::Key::F), egui::Event::Text("f".into())];
+    let (text, _) = run(&mut app, 1000.0, both);
+    assert!(
+        text.contains("a  1/3") && text.contains("単頁（F で見開き）"),
+        "{text}"
+    );
+}
+
+#[test]
+fn narrow_window_says_why_it_is_single() {
+    let (_dir, zip) = zip_of("sd-narrow", 3);
+    let mut app = app_for(&zip);
+    let (text, rects) = run(&mut app, 500.0, vec![key_event(egui::Key::F)]);
+    assert!(text.contains("見開きにできません"), "{text}");
+    assert!(text.contains("500"), "{text}");
+    assert_eq!(rects.len(), 1);
+}
+
+#[test]
+fn toggling_f_reuses_cached_pages() {
+    let (_dir, zip) = zip_of("sd-cache", 4);
+    let mut app = app_for(&zip);
+    run(&mut app, 1000.0, vec![]);
+    run(&mut app, 1000.0, vec![key_event(egui::Key::F)]);
+    // 先読み（裏スレッド）が全頁を埋めるまで待つ
+    let t = Instant::now();
+    while app.cached_pages() < 4 && t.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(10));
+        run(&mut app, 1000.0, vec![]);
+    }
+    assert_eq!(app.cached_pages(), 4);
+    let before = app.sync_loads();
+    run(&mut app, 1000.0, vec![key_event(egui::Key::ArrowRight)]);
+    run(&mut app, 1000.0, vec![key_event(egui::Key::F)]);
+    run(&mut app, 1000.0, vec![key_event(egui::Key::F)]);
+    assert_eq!(app.sync_loads(), before, "先読み済みの頁は同期復号しない");
+}
+
+#[test]
+fn mode_label_and_prefetch_plan() {
+    assert!(mode_label(false, 900.0, false, 0, 5).contains("単頁"));
+    assert!(mode_label(true, 900.0, true, 0, 5).starts_with("見開き"));
+    assert!(mode_label(true, 600.0, false, 0, 5).contains("見開きにできません"));
+    assert!(mode_label(true, 900.0, true, 4, 5).contains("最終頁"));
+    assert_eq!(prefetch_plan(5, false, 20), vec![6, 7, 4, 3]);
+    assert_eq!(prefetch_plan(4, true, 20), vec![6, 7, 8, 9, 3, 2, 1, 0]);
+    assert_eq!(prefetch_plan(0, false, 2), vec![1]);
+    assert_eq!(keep_range(10, 12), 4..12);
+    assert_eq!(keep_range(0, 3), 0..3);
+}
