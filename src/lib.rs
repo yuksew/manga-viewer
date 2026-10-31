@@ -4,6 +4,7 @@ pub mod decode;
 pub mod imgcheck;
 pub mod index;
 pub mod natural;
+pub mod neighbor;
 pub mod scan;
 pub mod server;
 pub mod view;

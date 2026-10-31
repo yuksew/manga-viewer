@@ -81,12 +81,16 @@ pub fn execute(root: Option<PathBuf>, db: &Path, command: &Command) -> anyhow::R
                 Some(path) => crate::view::open_path(path)?,
                 None => crate::view::open_from_index(db, root.as_deref(), *book)?,
             };
-            crate::view::run(
+            let mut app = crate::view::ViewApp::new(
                 title,
                 book,
                 *page,
                 exit_after_ms.map(std::time::Duration::from_millis),
-            )?;
+            );
+            if path.is_none() {
+                app = app.with_index(db.to_path_buf(), root.clone());
+            }
+            crate::view::launch(app)?;
         }
         Command::List => {
             let index = Index::open(db)?;

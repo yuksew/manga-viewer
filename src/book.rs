@@ -60,6 +60,7 @@ struct Page {
 }
 
 pub struct Book {
+    path: PathBuf,
     source: Source,
     pages: Vec<Page>,
 }
@@ -108,7 +109,16 @@ impl Book {
             return Err(BookError::NoPages);
         }
         pages.sort_by(|a, b| natural_cmp(&a.name, &b.name).then_with(|| a.name.cmp(&b.name)));
-        Ok(Book { source, pages })
+        Ok(Book {
+            path: path.to_path_buf(),
+            source,
+            pages,
+        })
+    }
+
+    /// 開いたときの path（次冊/前冊の候補解決が使う）。
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     pub fn page_count(&self) -> usize {

@@ -3,7 +3,7 @@
 //! 1 冊を開いて 1 頁を窓に収めて表示し、→/PageDown/Space で次、←/PageUp で前、Esc で終了。
 //! 復号は [`crate::decode`]（`imgcheck` を通ったバイトだけ）。壊れた頁は画像を出さずエラー文言を出す。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
@@ -11,7 +11,8 @@ use eframe::egui;
 
 use crate::book::Book;
 use crate::decode::{self, Decoded};
-use crate::index::{Index, Status};
+use crate::index::{BookRow, Index, Status};
+use crate::neighbor::{NavDir, resolve_neighbor};
 use crate::scan::BookKind;
 
 /// 窓が空のときに出すガイド文言。
@@ -80,13 +81,78 @@ pub fn step(cur: usize, delta: isize, count: usize) -> usize {
         .min(count.saturating_sub(1))
 }
 
-/// このフレームの入力から頁送りの向きを決める（次 +1 / 前 -1、両方や無入力は 0）。
+/// 見開きにする最小の窓幅（これより狭いと自動で単頁）。
+pub const SPREAD_MIN_WIDTH: f32 = 700.0;
+
+/// 見開きの希望と窓幅から、実際に見開きにするか。
+#[must_use]
+pub fn spread_active(want: bool, width: f32) -> bool {
+    want && width >= SPREAD_MIN_WIDTH
+}
+
+/// このフレームの入力から頁送りの向きと量を決める（次 +1 / 前 -1）。
+///
+/// キーが押されていればキーだけを数え、ホイールは見ない（二重計上しない）。
+/// キーが無ければホイール 1 イベントにつき下 +1 / 上 -1。
 fn nav_delta(i: &egui::InputState) -> isize {
     let next = i.key_pressed(egui::Key::ArrowRight)
         || i.key_pressed(egui::Key::PageDown)
         || i.key_pressed(egui::Key::Space);
     let prev = i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::PageUp);
-    isize::from(next) - isize::from(prev)
+    if next || prev {
+        return isize::from(next) - isize::from(prev);
+    }
+    i.events
+        .iter()
+        .map(|e| match e {
+            egui::Event::MouseWheel { delta, .. } if delta.y < 0.0 => 1,
+            egui::Event::MouseWheel { delta, .. } if delta.y > 0.0 => -1,
+            _ => 0,
+        })
+        .sum()
+}
+
+/// 頁送りの結果。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Nav {
+    /// 頁が変わる（または変わらない）
+    Page(usize),
+    /// 端を越えようとした。次冊/前冊の確認を出す
+    Prompt(NavDir),
+}
+
+/// 左頁 `page` から `delta` 回送る。見開きは 1 回 2 頁、最終頁判定は右側の頁で行う。
+#[must_use]
+pub fn plan_nav(page: usize, delta: isize, spread: bool, count: usize) -> Nav {
+    let last = count.saturating_sub(1);
+    let right = if spread { page + 1 } else { page };
+    if delta > 0 && right >= last {
+        Nav::Prompt(NavDir::Next)
+    } else if delta < 0 && page == 0 {
+        Nav::Prompt(NavDir::Prev)
+    } else {
+        let span = if spread { 2 } else { 1 };
+        Nav::Page(step(page, delta * span, count))
+    }
+}
+
+/// 索引から並び順の一覧を読む（開けなければ `None` でフォルダ順に落ちる）。
+fn load_rows(db: &Path, root: Option<&Path>) -> Option<Vec<BookRow>> {
+    let index = Index::open(db).ok()?;
+    match root {
+        Some(root) => index.books_under(root),
+        None => index.books(),
+    }
+    .ok()
+}
+
+/// 表示中の 1 頁分（見開きでは左右 2 つ）。
+#[derive(Default)]
+struct Slot {
+    texture: Option<egui::TextureHandle>,
+    error: Option<String>,
+    /// 修復して表示されているときの注記
+    note: Option<&'static str>,
 }
 
 pub struct ViewApp {
@@ -94,14 +160,19 @@ pub struct ViewApp {
     /// 開いている冊。空の窓（ドロップ待ち）では `None`
     book: Option<Book>,
     page: usize,
+    /// 見開きの希望（窓が狭いと実際は単頁）
+    spread: bool,
+    /// 次冊/前冊を開くか確認中の向き。出ている間は他の送り入力を無視する
+    prompt: Option<NavDir>,
+    /// 候補が無かったなどの窓内通知
+    notice: Option<&'static str>,
+    /// 索引 DB と root（あれば次冊/前冊は索引順で探す）
+    index: Option<(PathBuf, Option<PathBuf>)>,
     /// ドロップで開けなかったときの文言
     open_error: Option<String>,
-    /// 現在頁のテクスチャ。壊れ頁では `None`
-    texture: Option<egui::TextureHandle>,
-    error: Option<String>,
-    /// 現在頁が修復して表示されているときの注記（頁を送ると消える）
-    note: Option<&'static str>,
-    loaded: Option<usize>,
+    slots: Vec<Slot>,
+    /// 読み込み済みの（左頁, 見開きか）
+    loaded: Option<(usize, bool)>,
     deadline: Option<Instant>,
 }
 
@@ -114,12 +185,8 @@ impl ViewApp {
             title,
             book: Some(book),
             page,
-            open_error: None,
-            texture: None,
-            error: None,
-            note: None,
-            loaded: None,
             deadline: exit_after.map(|d| Instant::now() + d),
+            ..Self::empty()
         }
     }
 
@@ -130,13 +197,40 @@ impl ViewApp {
             title: String::new(),
             book: None,
             page: 0,
+            spread: false,
+            prompt: None,
+            notice: None,
+            index: None,
             open_error: None,
-            texture: None,
-            error: None,
-            note: None,
+            slots: Vec::new(),
             loaded: None,
             deadline: None,
         }
+    }
+
+    /// 次冊/前冊を索引 DB の順で探すようにする（無ければ同フォルダの自然順）。
+    #[must_use]
+    pub fn with_index(mut self, db: PathBuf, root: Option<PathBuf>) -> Self {
+        self.index = Some((db, root));
+        self
+    }
+
+    /// 確認中の向き。
+    #[must_use]
+    pub fn prompt(&self) -> Option<NavDir> {
+        self.prompt
+    }
+
+    /// 今の左頁（0 始まり）。
+    #[must_use]
+    pub fn page(&self) -> usize {
+        self.page
+    }
+
+    /// 開いている冊の表示名。
+    #[must_use]
+    pub fn title(&self) -> &str {
+        &self.title
     }
 
     /// `path`（zip かフォルダ）を開いて今の冊と入れ替える。失敗なら今の表示は保ち、文言を出す。
@@ -146,13 +240,65 @@ impl ViewApp {
                 self.title = title;
                 self.book = Some(book);
                 self.page = 0;
+                self.prompt = None;
+                self.notice = None;
                 self.open_error = None;
-                self.texture = None;
-                self.error = None;
-                self.note = None;
+                self.slots.clear();
                 self.loaded = None;
             }
             Err(err) => self.open_error = Some(format!("{err:#}")),
+        }
+    }
+
+    /// 次冊/前冊の確認への答え。はいなら候補を解決して開く（無ければ通知を出して現在冊のまま）。
+    pub fn answer_prompt(&mut self, yes: bool) {
+        let Some(dir) = self.prompt.take() else {
+            return;
+        };
+        if !yes {
+            return;
+        }
+        let Some(book) = &self.book else { return };
+        let cur = book.path().to_path_buf();
+        let rows = self
+            .index
+            .as_ref()
+            .and_then(|(db, root)| load_rows(db, root.as_deref()));
+        match resolve_neighbor(&cur, dir, rows.as_deref()) {
+            Some(path) => self.open_dropped(&path),
+            None => {
+                self.notice = Some(match dir {
+                    NavDir::Next => "次の冊はありません",
+                    NavDir::Prev => "前の冊はありません",
+                });
+            }
+        }
+    }
+
+    /// 確認の表示とボタン。Enter=はい / Esc=いいえ。
+    fn show_prompt(&mut self, ui: &mut egui::Ui, dir: NavDir, keys: bool) {
+        let ctx = ui.ctx().clone();
+        let mut answer = None;
+        if !keys {
+        } else if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+            answer = Some(true);
+        } else if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            answer = Some(false);
+        }
+        ui.horizontal(|ui| {
+            ui.label(match dir {
+                NavDir::Next => "最後の頁です。次の冊を開きますか？（Enter=はい / Esc=いいえ）",
+                NavDir::Prev => "最初の頁です。前の冊を開きますか？（Enter=はい / Esc=いいえ）",
+            });
+            if ui.button("はい").clicked() {
+                answer = Some(true);
+            }
+            if ui.button("いいえ").clicked() {
+                answer = Some(false);
+            }
+        });
+        if let Some(yes) = answer {
+            self.answer_prompt(yes);
         }
     }
 
@@ -182,53 +328,109 @@ impl ViewApp {
             return;
         }
 
-        let count = self.book.as_ref().map_or(0, Book::page_count);
-        let delta = ctx.input(nav_delta);
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        // 確認中は他の送り入力（キー/ホイール）を見ない。出した同じフレームの Enter/Esc も見ない
+        let was_prompting = self.prompt.is_some();
+        if !was_prompting {
+            self.handle_input(ctx);
         }
-        self.page = step(self.page, delta, count);
-        self.ensure_loaded(ctx);
+        if let Some(dir) = self.prompt {
+            self.show_prompt(ui, dir, was_prompting);
+        }
+        let Some(count) = self.book.as_ref().map(Book::page_count) else {
+            return;
+        };
+        let spread = spread_active(self.spread, ctx.content_rect().width());
+        self.ensure_loaded(ctx, spread);
 
-        ui.label(format!("{}  {}/{}", self.title, self.page + 1, count));
-        if let Some(msg) = &self.error {
-            ui.colored_label(
-                egui::Color32::LIGHT_RED,
-                format!("この頁は表示できません: {msg}"),
-            );
-        } else if let Some(tex) = &self.texture {
-            if let Some(note) = self.note {
-                ui.colored_label(egui::Color32::YELLOW, format!("修復して表示: {note}"));
-            }
-            let avail = ui.available_size();
-            let size = tex.size_vec2();
-            let scale = (avail.x / size.x).min(avail.y / size.y).min(1.0);
-            ui.centered_and_justified(|ui| {
-                ui.add(egui::Image::new((tex.id(), size * scale)));
+        let label = if spread && self.page + 1 < count {
+            format!("{}-{}/{}", self.page + 1, self.page + 2, count)
+        } else {
+            format!("{}/{}", self.page + 1, count)
+        };
+        ui.label(format!("{}  {label}", self.title));
+        if let Some(notice) = self.notice {
+            ui.colored_label(egui::Color32::YELLOW, notice);
+        }
+        if self.slots.len() == 2 {
+            ui.columns(2, |cols| {
+                for (col, slot) in cols.iter_mut().zip(&self.slots) {
+                    draw_slot(col, slot);
+                }
             });
+        } else if let Some(slot) = self.slots.first() {
+            draw_slot(ui, slot);
         }
     }
 
-    fn ensure_loaded(&mut self, ctx: &egui::Context) {
-        if self.loaded == Some(self.page) {
+    /// 確認中でないときのキー/ホイール入力（Esc 終了・F トグル・頁送り）。
+    fn handle_input(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::F)) {
+            self.spread = !self.spread;
+        }
+        let delta = ctx.input(nav_delta);
+        if delta == 0 {
             return;
         }
-        self.loaded = Some(self.page);
-        let Some(book) = &self.book else { return };
-        match load_page(book, self.page) {
-            Ok(img) => {
-                let size = [img.width as usize, img.height as usize];
-                let color = egui::ColorImage::from_rgba_unmultiplied(size, &img.rgba);
-                self.texture = Some(ctx.load_texture("page", color, egui::TextureOptions::LINEAR));
-                self.note = img.repair.map(decode::Repair::note);
-                self.error = None;
-            }
-            Err(msg) => {
-                self.texture = None;
-                self.note = None;
-                self.error = Some(msg);
-            }
+        let count = self.book.as_ref().map_or(0, Book::page_count);
+        let spread = spread_active(self.spread, ctx.content_rect().width());
+        self.notice = None;
+        match plan_nav(self.page, delta, spread, count) {
+            Nav::Page(p) => self.page = p,
+            Nav::Prompt(dir) => self.prompt = Some(dir),
         }
+    }
+
+    fn ensure_loaded(&mut self, ctx: &egui::Context, spread: bool) {
+        if self.loaded == Some((self.page, spread)) {
+            return;
+        }
+        self.loaded = Some((self.page, spread));
+        self.slots.clear();
+        let Some(book) = &self.book else { return };
+        let last = book.page_count().saturating_sub(1);
+        let upto = if spread {
+            (self.page + 1).min(last)
+        } else {
+            self.page
+        };
+        for i in self.page..=upto {
+            let mut slot = Slot::default();
+            match load_page(book, i) {
+                Ok(img) => {
+                    let size = [img.width as usize, img.height as usize];
+                    let color = egui::ColorImage::from_rgba_unmultiplied(size, &img.rgba);
+                    let name = format!("page{}", i - self.page);
+                    slot.texture =
+                        Some(ctx.load_texture(name, color, egui::TextureOptions::LINEAR));
+                    slot.note = img.repair.map(decode::Repair::note);
+                }
+                Err(msg) => slot.error = Some(msg),
+            }
+            self.slots.push(slot);
+        }
+    }
+}
+
+/// 1 頁分を `ui` の空き領域に収めて描く。
+fn draw_slot(ui: &mut egui::Ui, slot: &Slot) {
+    if let Some(msg) = &slot.error {
+        ui.colored_label(
+            egui::Color32::LIGHT_RED,
+            format!("この頁は表示できません: {msg}"),
+        );
+    } else if let Some(tex) = &slot.texture {
+        if let Some(note) = slot.note {
+            ui.colored_label(egui::Color32::YELLOW, format!("修復して表示: {note}"));
+        }
+        let avail = ui.available_size();
+        let size = tex.size_vec2();
+        let scale = (avail.x / size.x).min(avail.y / size.y).min(1.0);
+        ui.centered_and_justified(|ui| {
+            ui.add(egui::Image::new((tex.id(), size * scale)));
+        });
     }
 }
 
@@ -288,7 +490,8 @@ pub fn run(
     launch(ViewApp::new(title, book, page, exit_after))
 }
 
-fn launch(app: ViewApp) -> anyhow::Result<()> {
+/// 組み立て済みの [`ViewApp`] を窓で動かす。窓が閉じるまで戻らない。
+pub fn launch(app: ViewApp) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("manga-viewer")

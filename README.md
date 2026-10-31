@@ -12,7 +12,12 @@ manga-viewer view --book <id> [--page N]  # 索引の冊を単独ウィンドウ
 1. `index <root>` で冊を索引する（既定の root は `D:\books`）。索引 DB は既定で `%LOCALAPPDATA%\manga-viewer\index.db`。`--db <path>` か環境変数 `MANGA_VIEWER_DATA` で変えられる。
 2. `list` で冊の id を確かめる（TSV: id / title / kind / page_count / status / path）。
 3. `view --book <id>` で開く。`--book` を省略すると最初の壊れていない冊を開く。`--page N` は 0 始まりで、頁数以上なら最後の頁に丸める。
-4. 操作は ←/→ で頁送り、Esc で終了。
+4. 操作:
+   - 頁送り: →/PageDown/Space/マウスホイール下で次、←/PageUp/ホイール上で前（ホイールは 1 イベント ±1 頁。キーと同時でも二重に進まない）。
+   - `F` で単頁⇔見開き 2 頁（左右に n, n+1 を並べる）。見開き中は送りが ±2 頁。窓幅が 700 未満のときは自動で単頁。
+   - 最終頁で「次」をすると窓内に「次の冊を開きますか？」が出る。Enter か「はい」ボタンで次の冊、Esc か「いいえ」で閉じる（見開き中は右側の頁が最終頁のとき）。最初の頁で「前」をすると同様に前の冊の確認が出る。確認中は他の送り入力を無視する。
+   - 次冊/前冊は、`view` を索引から開いていれば索引の順（壊れた冊は飛ばす）、`--path` やドロップで開いていれば同じフォルダ内の自然順（zip/cbz と画像フォルダ）。候補が無ければ窓内に表示して現在の冊のまま。
+   - Esc で終了。
 
 ビルドは `cargo build --release`。成果物は `target/release/manga-viewer.exe` 1 つだけで、そのまま配れる。
 
