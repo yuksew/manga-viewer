@@ -102,6 +102,10 @@ pub fn step(cur: usize, delta: isize, count: usize) -> usize {
 pub const SLIDER_ZONE: f32 = 72.0;
 /// 窓の上端からこの距離（点）以内にカーソルがあると頁番号・モードの表示を出す（#15）。
 pub const TOP_ZONE: f32 = 48.0;
+/// スライダーをつまんでいる間に出す行き先の縮小画像の高さ（点、#17）。
+const PREVIEW_HEIGHT: f32 = 180.0;
+/// 縮小画像を持っておく最大数（超えたら捨てて作り直す）。
+const PREVIEW_KEEP: usize = 64;
 /// 頁スライダーの帯の高さ（点）。
 const SLIDER_HEIGHT: f32 = 48.0;
 
@@ -426,6 +430,12 @@ pub struct ViewApp {
     shifted: bool,
     /// 組をずらした冊のパス。冊を開くたびにここから [`ViewApp::shifted`] を決め、終了時に保存する
     shifted_books: HashSet<PathBuf>,
+    /// スライダーの行き先の縮小画像（#17）。頁番号 → テクスチャ
+    previews: HashMap<usize, egui::TextureHandle>,
+    /// 裏で縮小画像を作っている頁（同時に 1 つだけ）
+    preview_inflight: Option<usize>,
+    preview_tx: Sender<Loaded>,
+    preview_rx: Receiver<Loaded>,
 }
 
 impl ViewApp {
@@ -513,6 +523,7 @@ impl ViewApp {
     #[must_use]
     pub fn empty() -> Self {
         let (tx, rx) = mpsc::channel();
+        let (preview_tx, preview_rx) = mpsc::channel();
         Self {
             title: String::new(),
             book: None,
@@ -546,6 +557,10 @@ impl ViewApp {
             status: String::new(),
             shifted: false,
             shifted_books: HashSet::new(),
+            previews: HashMap::new(),
+            preview_inflight: None,
+            preview_tx,
+            preview_rx,
         }
     }
 
@@ -580,6 +595,7 @@ impl ViewApp {
         self.cache.clear();
         self.inflight.clear();
         self.visible.clear();
+        self.previews.clear();
         self.generation += 1;
         if let (Some(lib), Some(path)) = (self.library.as_mut(), path) {
             lib.select_path(&path);
@@ -615,6 +631,7 @@ impl ViewApp {
         self.prompt = None;
         self.notice = None;
         self.open_error = None;
+        self.previews.clear();
         self.cache.clear();
         self.inflight.clear();
         self.visible.clear();
@@ -1032,9 +1049,86 @@ impl ViewApp {
         let target = (value.round() as usize).clamp(1, count.max(1)) - 1;
         if resp.is_pointer_button_down_on() {
             self.slider_drag = Some(target);
+            self.show_preview(ctx, target, count, resp.rect);
         } else if self.slider_drag.take().is_some() || resp.changed() {
             self.jump_to(target);
         }
+    }
+
+    /// つまんでいる間、行き先 `target` の縮小画像をつまみの上に出す（#17）。復号済みの頁はその
+    /// テクスチャを縮めて使い、無ければ小さく裏で復号する（同時に 1 つ。届いたときに行き先が
+    /// 変わっていれば次はその頁を作る）。間に合わない間は出さない（番号は帯に出ている）。
+    fn show_preview(&mut self, ctx: &egui::Context, target: usize, count: usize, bar: egui::Rect) {
+        while let Ok((generation, i, _, res)) = self.preview_rx.try_recv() {
+            if self.preview_inflight == Some(i) {
+                self.preview_inflight = None;
+            }
+            if generation != self.generation {
+                continue;
+            }
+            if let Ok(img) = res {
+                let size = [img.width as usize, img.height as usize];
+                let color = color_image(size, img.rgba, img.opaque);
+                let tex =
+                    ctx.load_texture(format!("preview{i}"), color, egui::TextureOptions::LINEAR);
+                if self.previews.len() >= PREVIEW_KEEP {
+                    self.previews.clear();
+                }
+                self.previews.insert(i, tex);
+            }
+        }
+        let shown = match self.cache.get(&target) {
+            Some(Slot {
+                texture: Some(tex),
+                size,
+                ..
+            }) => Some((tex.id(), *size)),
+            _ => self.previews.get(&target).map(|t| (t.id(), t.size_vec2())),
+        };
+        if shown.is_none()
+            && self.preview_inflight.is_none()
+            && let Some(book) = self.book.clone()
+        {
+            self.preview_inflight = Some(target);
+            let side = (PREVIEW_HEIGHT * ctx.pixels_per_point()).ceil() as u32;
+            let (tx, ctx2, generation) = (self.preview_tx.clone(), ctx.clone(), self.generation);
+            rayon::spawn(move || {
+                let res = book
+                    .read_page_bytes(target)
+                    .map_err(|e| e.to_string())
+                    .and_then(|b| decode::decode_fit(&b, side, side).map_err(|e| e.to_string()));
+                let _ = tx.send((generation, target, 0.0, res));
+                ctx2.request_repaint();
+            });
+        }
+        let Some((tex, size)) = shown else {
+            return;
+        };
+        // つまみの位置（右端が 1 頁目）の上に、縦 PREVIEW_HEIGHT で縦横比を保って置く
+        let t = if count > 1 {
+            target as f32 / (count - 1) as f32
+        } else {
+            0.0
+        };
+        let x = bar.right() - t * bar.width();
+        let scale = PREVIEW_HEIGHT / size.y.max(1.0);
+        let preview = egui::vec2(size.x * scale, PREVIEW_HEIGHT);
+        let screen = ctx.content_rect();
+        let left = (x - preview.x / 2.0).clamp(
+            screen.left(),
+            (screen.right() - preview.x).max(screen.left()),
+        );
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(left, screen.bottom() - SLIDER_HEIGHT - 8.0 - preview.y),
+            preview,
+        );
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Tooltip,
+            egui::Id::unique("page-preview"),
+        ));
+        painter.rect_filled(rect.expand(3.0), 2.0, egui::Color32::from_black_alpha(220));
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        painter.image(tex, rect, uv, egui::Color32::WHITE);
     }
 
     /// 頁 `page`（0 始まり）へ飛ぶ。見開きの組の先頭へは次のフレームの読み込みで揃う。

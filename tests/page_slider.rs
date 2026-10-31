@@ -19,6 +19,8 @@ struct Harness {
 struct Frame {
     text: String,
     start_drag: bool,
+    /// 描かれた画像（頁・縮小画像）の矩形
+    images: Vec<egui::Rect>,
 }
 
 impl Harness {
@@ -49,9 +51,14 @@ impl Harness {
         let mut out = self.ctx.run_ui(raw, |ui| app.show(ui));
         out.textures_delta.clear();
         let mut text = Vec::new();
+        let mut images = Vec::new();
         for s in &out.shapes {
-            if let egui::epaint::Shape::Text(t) = &s.shape {
-                text.push(t.galley.text().to_string());
+            match &s.shape {
+                egui::epaint::Shape::Text(t) => text.push(t.galley.text().to_string()),
+                egui::epaint::Shape::Mesh(m) if m.texture_id != egui::TextureId::default() => {
+                    images.push(m.calc_bounds());
+                }
+                _ => {}
             }
         }
         let start_drag = out.viewport_output.values().any(|v| {
@@ -62,6 +69,7 @@ impl Harness {
         Frame {
             text: text.join("\n"),
             start_drag,
+            images,
         }
     }
 
@@ -157,4 +165,37 @@ fn dragging_jumps_on_release_and_does_not_move_window() {
         modifiers: egui::Modifiers::NONE,
     }]);
     assert_eq!(h.app.page(), page + 1);
+}
+
+/// 縮小画像はスライダーの帯の上に、高さ 180 点で出る。
+fn preview_in(f: &Frame) -> Option<egui::Rect> {
+    f.images
+        .iter()
+        .copied()
+        .find(|r| (r.height() - 180.0).abs() < 1.0 && r.bottom() < H - 48.0)
+}
+
+#[test]
+fn dragging_shows_preview_of_target_page_and_hides_on_release() {
+    // 頁数を多くして、行き先が頁キャッシュ（表示中の前後）に無いようにする
+    let mut h = Harness::new("slider-preview", 40);
+    h.settle(vec![moved(W - 20.0, BAR_Y)]);
+    h.frame(vec![button(W - 20.0, BAR_Y, true)]);
+    let x = 200.0; // 左寄り = 後ろの頁
+    let mut found = None;
+    let t = std::time::Instant::now();
+    while found.is_none() && t.elapsed() < std::time::Duration::from_secs(5) {
+        let f = h.frame(vec![moved(x, BAR_Y)]);
+        found = preview_in(&f);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let rect = found.expect("つまんでいる間に行き先の縮小画像が出ない");
+    // つまみの近く（左寄り）に出る
+    assert!(rect.center().x < W / 2.0, "{rect:?}");
+    assert_eq!(h.app.page(), 0, "つまんでいる間は飛ばない");
+    // 離すと飛んで、縮小画像は消える
+    h.frame(vec![button(x, BAR_Y, false)]);
+    let f = h.settle(vec![moved(W / 2.0, H / 2.0)]);
+    assert!(preview_in(&f).is_none(), "{:?}", f.images);
+    assert!(h.app.page() > 20, "{}", h.app.page());
 }

@@ -10,7 +10,7 @@ param(
     # 開く冊（zip かフォルダ）。省略すると 5 頁のサンプル冊を作って使う
     [string]$Book,
     # SendKeys の文字列を順に送る。`shot` は撮影（F12）、`mouse:<x>,<y>` は窓の中身の割合位置（0〜1）へカーソルを動かす、
-    # `dblclick:<x>,<y>` はその位置でダブルクリックする
+    # `dblclick:<x>,<y>` はその位置でダブルクリックする、`down:<x>,<y>` / `up:<x>,<y>` はその位置で左ボタンを押す / 離す
     [string[]]$Keys = @('shot'),
     # target/screenshots/<Name>.png に保存する
     [string]$Name = 'capture',
@@ -81,7 +81,7 @@ try {
     [MvCapWin2]::SetProcessDPIAware() | Out-Null
     $hwnd = $p.MainWindowHandle
     foreach ($k in $Keys) {
-        if ($k -match '^(mouse|dblclick):([\d.]+),([\d.]+)$') {
+        if ($k -match '^(mouse|dblclick|down|up):([\d.]+),([\d.]+)$') {
             $r = New-Object MvCapWin2+RECT
             [MvCapWin2]::GetClientRect($hwnd, [ref]$r) | Out-Null
             $pt = New-Object MvCapWin2+POINT
@@ -91,6 +91,8 @@ try {
             [MvCapWin2]::SetCursorPos($pt.X - 4, $pt.Y - 4) | Out-Null
             Start-Sleep -Milliseconds 150
             [MvCapWin2]::SetCursorPos($pt.X, $pt.Y) | Out-Null
+            if ($Matches[1] -eq 'down') { [MvCapWin2]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero) }
+            if ($Matches[1] -eq 'up') { [MvCapWin2]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero) }
             if ($Matches[1] -eq 'dblclick') {
                 Start-Sleep -Milliseconds 100
                 foreach ($n in 1..2) {
