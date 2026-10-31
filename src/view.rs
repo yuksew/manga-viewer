@@ -1018,9 +1018,16 @@ fn save_screenshot_on_f12(ctx: &egui::Context) {
             .map_or(0, |d| d.as_millis());
         let path = dir.join(format!("shot-{stamp}.png"));
         let [w, h] = img.size;
-        let rgba = img.pixels.iter().flat_map(|p| p.to_array()).collect();
-        let res = image::RgbaImage::from_raw(w as u32, h as u32, rgba)
-            .map(|buf| buf.save(&path));
+        // 描画結果のアルファは 255 未満のことがあり、そのままだと画像ビューアで背景が透けて見えるので不透明にする
+        let rgba = img
+            .pixels
+            .iter()
+            .flat_map(|p| {
+                let [r, g, b, _] = p.to_array();
+                [r, g, b, 255]
+            })
+            .collect();
+        let res = image::RgbaImage::from_raw(w as u32, h as u32, rgba).map(|buf| buf.save(&path));
         eprintln!("screenshot	{}	{res:?}", path.display());
     });
     ctx.request_repaint();
