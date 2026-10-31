@@ -91,6 +91,11 @@ pub fn step(cur: usize, delta: isize, count: usize) -> usize {
         .min(count.saturating_sub(1))
 }
 
+/// 窓の下端からこの距離（点）以内にカーソルがあると頁スライダーを出す。
+pub const SLIDER_ZONE: f32 = 72.0;
+/// 頁スライダーの帯の高さ（点）。
+const SLIDER_HEIGHT: f32 = 48.0;
+
 /// 見開きにする最小の窓幅（これより狭いと自動で単頁）。
 pub const SPREAD_MIN_WIDTH: f32 = 700.0;
 
@@ -337,6 +342,8 @@ pub struct ViewApp {
     autopilot: Option<Autopilot>,
     /// 最後に OS のタイトルバーへ送った文字列（変わったときだけ送る）
     window_title: Option<String>,
+    /// 頁スライダーをつまんでいる間の行き先（0 始まり）。離したときにその頁へ飛ぶ
+    slider_drag: Option<usize>,
 }
 
 impl ViewApp {
@@ -384,6 +391,7 @@ impl ViewApp {
             probe: None,
             autopilot: None,
             window_title: None,
+            slider_drag: None,
         }
     }
 
@@ -759,6 +767,73 @@ impl ViewApp {
                 _ => egui::Align::Center,
             };
             draw_slot(ui, rect, slot, align);
+        }
+        if self.prompt.is_none() {
+            self.show_page_slider(ctx, count);
+        }
+    }
+
+    /// 窓の下端にカーソルがある間（とつまんでいる間）だけ、頁スライダーを頁の上に重ねて出す。
+    /// 右綴じなので右端が 1 頁目。つまんで動かす間は行き先の頁番号だけ出し、離したらそこへ飛ぶ
+    /// （動かすたびに同期復号しないため）。トラックのクリックはその場で飛ぶ。
+    fn show_page_slider(&mut self, ctx: &egui::Context, count: usize) {
+        let screen = ctx.content_rect();
+        let near_bottom = ctx
+            .input(|i| i.pointer.hover_pos())
+            .is_some_and(|p| screen.contains(p) && p.y >= screen.bottom() - SLIDER_ZONE);
+        if !near_bottom && self.slider_drag.is_none() {
+            return;
+        }
+        let mut value = (self.slider_drag.unwrap_or(self.page) + 1) as f64;
+        let shown = egui::Area::new(egui::Id::unique("page-slider"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(screen.left(), screen.bottom() - SLIDER_HEIGHT))
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(egui::Color32::from_black_alpha(190))
+                    .inner_margin(egui::Margin::symmetric(16, 10))
+                    .show(ui, |ui| {
+                        ui.set_width(screen.width() - 32.0);
+                        ui.set_height(SLIDER_HEIGHT - 20.0);
+                        ui.horizontal_centered(|ui| {
+                            let digits = count.to_string().len();
+                            ui.label(
+                                egui::RichText::new(format!("{value:>digits$} / {count}"))
+                                    .monospace()
+                                    .color(egui::Color32::WHITE),
+                            );
+                            ui.add_space(12.0);
+                            ui.spacing_mut().slider_width = ui.available_width();
+                            // 範囲を大→小にして右端を 1 頁目にする
+                            let max = count.max(1) as f64;
+                            ui.add(
+                                egui::Slider::new(&mut value, max..=1.0)
+                                    .integer()
+                                    .show_value(false),
+                            )
+                        })
+                        .inner
+                    })
+                    .inner
+            });
+        let resp = shown.inner;
+        // 矢印キーはスライダーではなく頁送りに使うので、フォーカスは持たせない
+        if resp.has_focus() {
+            resp.surrender_focus();
+        }
+        let target = (value.round() as usize).clamp(1, count.max(1)) - 1;
+        if resp.is_pointer_button_down_on() {
+            self.slider_drag = Some(target);
+        } else if self.slider_drag.take().is_some() || resp.changed() {
+            self.jump_to(target);
+        }
+    }
+
+    /// 頁 `page`（0 始まり）へ飛ぶ。見開きの組の先頭へは次のフレームの読み込みで揃う。
+    fn jump_to(&mut self, page: usize) {
+        if page != self.page {
+            self.page = page;
+            self.notice = None;
         }
     }
 
