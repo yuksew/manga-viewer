@@ -48,8 +48,8 @@ fn frame(app: &mut ViewApp, key: Option<egui::Key>) -> (Vec<egui::ColorImage>, S
     let images = out
         .textures_delta
         .set
-        .iter()
-        .flat_map(|(_, deltas)| deltas.iter())
+        .values()
+        .flat_map(|deltas| deltas.iter())
         .map(|d| match &d.image {
             egui::ImageData::Color(c) => (**c).clone(),
         })

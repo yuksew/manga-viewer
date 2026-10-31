@@ -326,6 +326,8 @@ fn jpeg_eoi_bytes_inside_header_segment_do_not_win() {
     let d = decode_rgba(&bad).unwrap();
     assert_eq!(
         d.repair,
-        Some(Repair::TrailingGarbage { len: with_seg.len() })
+        Some(Repair::TrailingGarbage {
+            len: with_seg.len()
+        })
     );
 }

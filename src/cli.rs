@@ -3,7 +3,8 @@
 //! * `manga-viewer index <root> [--db <path>]` — 走査して索引 DB に反映し、件数と所要を出す
 //! * `manga-viewer list [--db <path>]` — 索引 DB の中身を TSV で出す
 //! * `manga-viewer view [--book ID] [--page N]` — 単独ウィンドウで 1 冊を読む（p0-6b）
-//! * 引数なし — GUI（p0-3a）。今は案内を出すだけ
+//! * `manga-viewer view --path <zip|dir>` — 索引なしで直接開く
+//! * 引数なし — 空の窓。zip / フォルダをドロップして開く（DB 不要）
 //!
 //! ルートは位置引数のほか `--root` でも書ける（設計 §3.3 の形）。両方あれば位置引数が勝つ。
 
@@ -72,10 +73,14 @@ pub fn execute(root: Option<PathBuf>, db: &Path, command: &Command) -> anyhow::R
         }
         Command::View {
             book,
+            path,
             page,
             exit_after_ms,
         } => {
-            let (title, book) = crate::view::open_from_index(db, root.as_deref(), *book)?;
+            let (title, book) = match path {
+                Some(path) => crate::view::open_path(path)?,
+                None => crate::view::open_from_index(db, root.as_deref(), *book)?,
+            };
             crate::view::run(
                 title,
                 book,
@@ -146,6 +151,9 @@ pub enum Command {
         /// 冊の id（`list` の先頭列。省略なら最初の壊れていない冊）
         #[arg(long, value_name = "ID")]
         book: Option<i64>,
+        /// 索引を使わず zip / フォルダを直接開く（DB 不要。`--book` とは併用不可）
+        #[arg(long, value_name = "PATH", conflicts_with = "book")]
+        path: Option<PathBuf>,
         /// 開く頁（0 始まり）。頁数以上なら最後の頁に丸める（`serve` の `?p=` は範囲外 404）
         #[arg(long, default_value_t = 0)]
         page: usize,
@@ -159,16 +167,4 @@ pub enum Command {
         #[arg(long, default_value_t = 7878)]
         port: u16,
     },
-}
-
-/// 引数なし起動（設計 §3.3 の GUI。p0-3a まで未実装なので案内だけ出す）。
-pub fn gui_stub(root: Option<&Path>, db: &Path) {
-    let root = root.map_or_else(|| PathBuf::from(crate::DEFAULT_ROOT), PathBuf::from);
-    println!("GUI はまだです（p0-3a）。");
-    println!(
-        "  索引: manga-viewer index \"{}\" --db \"{}\"",
-        root.display(),
-        db.display()
-    );
-    println!("  一覧: manga-viewer list --db \"{}\"", db.display());
 }

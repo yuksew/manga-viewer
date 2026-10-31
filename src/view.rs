@@ -12,6 +12,31 @@ use eframe::egui;
 use crate::book::Book;
 use crate::decode::{self, Decoded};
 use crate::index::{Index, Status};
+use crate::scan::BookKind;
+
+/// 窓が空のときに出すガイド文言。
+pub const DROP_GUIDE: &str = "ここに zip またはフォルダをドロップ";
+
+/// パスを直接開く（DB 不要）。フォルダなら画像フォルダ、`.zip`/`.cbz` なら ZIP として読む。
+pub fn open_path(path: &Path) -> anyhow::Result<(String, Book)> {
+    let meta = std::fs::metadata(path).with_context(|| path.display().to_string())?;
+    let kind = if meta.is_dir() {
+        BookKind::Folder
+    } else if path.to_str().is_some_and(crate::book::is_zip_name) {
+        BookKind::Zip
+    } else {
+        return Err(anyhow!(
+            "zip（cbz）かフォルダではありません: {}",
+            path.display()
+        ));
+    };
+    let book = Book::open(path, kind).with_context(|| path.display().to_string())?;
+    let title = path.file_stem().or_else(|| path.file_name()).map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    Ok((title, book))
+}
 
 /// 索引から冊を選んで開く。`id` が無ければ最初の壊れていない冊。
 pub fn open_from_index(
@@ -66,8 +91,11 @@ fn nav_delta(i: &egui::InputState) -> isize {
 
 pub struct ViewApp {
     title: String,
-    book: Book,
+    /// 開いている冊。空の窓（ドロップ待ち）では `None`
+    book: Option<Book>,
     page: usize,
+    /// ドロップで開けなかったときの文言
+    open_error: Option<String>,
     /// 現在頁のテクスチャ。壊れ頁では `None`
     texture: Option<egui::TextureHandle>,
     error: Option<String>,
@@ -84,13 +112,47 @@ impl ViewApp {
         let page = step(page, 0, book.page_count());
         Self {
             title,
-            book,
+            book: Some(book),
             page,
+            open_error: None,
             texture: None,
             error: None,
             note: None,
             loaded: None,
             deadline: exit_after.map(|d| Instant::now() + d),
+        }
+    }
+
+    /// 冊のない空の窓（ドロップ待ち）。
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            title: String::new(),
+            book: None,
+            page: 0,
+            open_error: None,
+            texture: None,
+            error: None,
+            note: None,
+            loaded: None,
+            deadline: None,
+        }
+    }
+
+    /// `path`（zip かフォルダ）を開いて今の冊と入れ替える。失敗なら今の表示は保ち、文言を出す。
+    pub fn open_dropped(&mut self, path: &Path) {
+        match open_path(path) {
+            Ok((title, book)) => {
+                self.title = title;
+                self.book = Some(book);
+                self.page = 0;
+                self.open_error = None;
+                self.texture = None;
+                self.error = None;
+                self.note = None;
+                self.loaded = None;
+            }
+            Err(err) => self.open_error = Some(format!("{err:#}")),
         }
     }
 
@@ -105,7 +167,22 @@ impl ViewApp {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
 
-        let count = self.book.page_count();
+        let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()));
+        if let Some(path) = dropped {
+            self.open_dropped(&path);
+        }
+        if let Some(err) = &self.open_error {
+            ui.colored_label(egui::Color32::LIGHT_RED, err);
+        }
+        if self.book.is_none() {
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            ui.centered_and_justified(|ui| ui.label(DROP_GUIDE));
+            return;
+        }
+
+        let count = self.book.as_ref().map_or(0, Book::page_count);
         let delta = ctx.input(nav_delta);
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -137,7 +214,8 @@ impl ViewApp {
             return;
         }
         self.loaded = Some(self.page);
-        match load_page(&self.book, self.page) {
+        let Some(book) = &self.book else { return };
+        match load_page(book, self.page) {
             Ok(img) => {
                 let size = [img.width as usize, img.height as usize];
                 let color = egui::ColorImage::from_rgba_unmultiplied(size, &img.rgba);
@@ -190,6 +268,13 @@ fn register_font(ctx: &egui::Context, data: Vec<u8>) {
     ctx.set_fonts(fonts);
 }
 
+/// 空の窓を開く（zip / フォルダのドロップ待ち）。窓が閉じるまで戻らない。
+pub fn run_empty(exit_after: Option<Duration>) -> anyhow::Result<()> {
+    let mut app = ViewApp::empty();
+    app.deadline = exit_after.map(|d| Instant::now() + d);
+    launch(app)
+}
+
 /// 窓を開いて閲覧する。窓が閉じるまで戻らない。`exit_after` があればその時間で自動で閉じる。
 ///
 /// `page`（0 始まり）が頁数以上なら**最後の頁**に丸める（先頭には戻らない・エラーにもしない）。
@@ -200,7 +285,10 @@ pub fn run(
     page: usize,
     exit_after: Option<Duration>,
 ) -> anyhow::Result<()> {
-    let app = ViewApp::new(title, book, page, exit_after);
+    launch(ViewApp::new(title, book, page, exit_after))
+}
+
+fn launch(app: ViewApp) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("manga-viewer")

@@ -20,14 +20,7 @@ fn main() -> ExitCode {
 fn dispatch(cli: &Cli) -> anyhow::Result<()> {
     match &cli.command {
         Some(command) => cli::run(cli.root.clone(), cli.db.clone(), command),
-        // 設計 §3.3 の引数なし = GUI。p0-3a まで未実装なので案内を出す
-        None => {
-            let db = match &cli.db {
-                Some(path) => path.clone(),
-                None => manga_viewer::index::default_db_path()?,
-            };
-            cli::gui_stub(cli.root.as_deref(), &db);
-            Ok(())
-        }
+        // 引数なし = 空の窓。zip / フォルダのドロップで開く（DB 不要）
+        None => manga_viewer::view::run_empty(None),
     }
 }
