@@ -83,14 +83,14 @@ fn spread_draws_two_images_side_by_side_at_real_window_widths() {
     }
 }
 
-/// 頁ごとに一辺の違う正方形 PNG を入れた zip（描画矩形の大きさで頁を見分けるため）。
-fn zip_with_sizes(tag: &str, sides: &[u32]) -> (TmpDir, std::path::PathBuf) {
+/// 頁ごとに寸法の違う PNG を入れた zip（描画矩形の大きさで頁を見分けるため）。
+fn zip_with_sizes(tag: &str, sizes: &[(u32, u32)]) -> (TmpDir, std::path::PathBuf) {
     use std::io::Write;
     let dir = TmpDir::new(tag);
     let zip = dir.0.join("a.zip");
     let mut w = zip::ZipWriter::new(std::fs::File::create(&zip).unwrap());
-    for (i, side) in sides.iter().enumerate() {
-        let img = image::RgbImage::from_pixel(*side, *side, image::Rgb([200, 100, 50]));
+    for (i, &(width, height)) in sizes.iter().enumerate() {
+        let img = image::RgbImage::from_pixel(width, height, image::Rgb([200, 100, 50]));
         let mut buf = std::io::Cursor::new(Vec::new());
         img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
         w.start_file(
@@ -106,8 +106,10 @@ fn zip_with_sizes(tag: &str, sides: &[u32]) -> (TmpDir, std::path::PathBuf) {
 
 #[test]
 fn spread_puts_first_page_on_the_right_and_second_on_the_left() {
-    // 表紙の次の組: 2 ページ目は 20px、3 ページ目は 60px の正方形。右綴じなら右半分が 20px、左半分が 60px
-    let (_dir, zip) = zip_with_sizes("sd-rtl", &[40, 20, 60]);
+    // 表紙の次の組: 2 ページ目は 20×40、3 ページ目は 30×40。半分の領域（450×800）に収まる最大まで
+    // 拡大するので（#19）、2 ページ目は高さで決まって幅 400、3 ページ目は幅で決まって幅 450。
+    // 右綴じなら右半分が幅 400、左半分が幅 450
+    let (_dir, zip) = zip_with_sizes("sd-rtl", &[(40, 40), (20, 40), (30, 40)]);
     let mut app = app_for(&zip);
     run(&mut app, 900.0, vec![]);
     run(&mut app, 900.0, vec![key_event(egui::Key::F)]);
@@ -120,11 +122,11 @@ fn spread_puts_first_page_on_the_right_and_second_on_the_left() {
         "{rects:?}"
     );
     assert!(
-        (right.width() - 20.0).abs() < 0.5,
+        (right.width() - 400.0).abs() < 0.5,
         "右は 1 ページ目: {rects:?}"
     );
     assert!(
-        (left.width() - 60.0).abs() < 0.5,
+        (left.width() - 450.0).abs() < 0.5,
         "左は 2 ページ目: {rects:?}"
     );
 }

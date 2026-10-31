@@ -96,8 +96,10 @@ fn page_uses_the_whole_window_height() {
     let dir = TmpDir::new("top-full");
     let mut app = app(&dir, &["1.png"]);
     let ctx = egui::Context::default();
-    // 1×1 の頁は拡大しないので、縦の中央に来る（上のラベル分ずれない）
+    // 1×1 の頁は窓に収まる最大（高さいっぱい、#19）まで拡大され、上のラベル分の余白なく上端から描く
     let (_, rects) = frame(&ctx, &mut app, None, vec![]);
     assert_eq!(rects.len(), 1, "{rects:?}");
     assert!((rects[0].center().y - H / 2.0).abs() < 1.0, "{rects:?}");
+    assert!((rects[0].height() - H).abs() < 1.0, "{rects:?}");
+    assert!(rects[0].min.y.abs() < 1.0, "{rects:?}");
 }

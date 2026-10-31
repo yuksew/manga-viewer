@@ -1519,7 +1519,7 @@ fn draw_placeholder(ui: &egui::Ui, area: egui::Rect, tex: &egui::TextureHandle) 
     ui.painter().image(tex.id(), rect, uv, egui::Color32::WHITE);
 }
 
-/// 1 頁分を `area` の中に収めて描く（エラー/修復の注記は上、画像は残りの縦中央・横は `align` 寄せ）。
+/// 1 頁分を `area` に収まる最大の大きさで描く（エラー/修復の注記は上、画像は残りの縦中央・横は `align` 寄せ）。
 fn draw_slot(ui: &mut egui::Ui, area: egui::Rect, slot: &Slot, align: egui::Align) {
     ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
         if let Some(msg) = &slot.error {
@@ -1533,9 +1533,9 @@ fn draw_slot(ui: &mut egui::Ui, area: egui::Rect, slot: &Slot, align: egui::Alig
             }
             let avail = ui.available_rect_before_wrap();
             let size = slot.size;
-            let scale = (avail.width() / size.x)
-                .min(avail.height() / size.y)
-                .min(1.0);
+            // 窓より小さい頁も収まる最大まで拡大する（#19）。テクスチャは元より大きく復号しない
+            // ので、拡大は描くときの LINEAR 補間に任せる
+            let scale = (avail.width() / size.x).min(avail.height() / size.y);
             let rect = egui::Align2([align, egui::Align::Center])
                 .align_size_within_rect(size * scale, avail);
             let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
