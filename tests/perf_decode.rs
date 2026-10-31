@@ -154,3 +154,37 @@ fn rgba_conversion() {
         );
     }
 }
+
+/// #18: 見開きで各頁を窓の半分の幅で復号した場合の差（時間と 1 頁の画素メモリ）。
+/// 頁が窓の高さで決まる横長の窓では半分にしても寸法は変わらない。
+#[test]
+#[ignore = "release で手動実行するベンチ"]
+fn spread_half_width_target() {
+    // 既定 900×1000 点 @150%、横長の最大化（2560×1400 程度）、4K 全画面
+    let windows = [(1350u32, 1500u32), (2560, 1400), (3840, 2160)];
+    println!("BENCH window\tsource\tfull size\tfull ms\tfull MB\thalf size\thalf ms\thalf MB");
+    for (w, h) in [(1500u32, 2200u32), (2400, 3400)] {
+        let bytes = jpeg(&manga(w, h, false));
+        for (ww, wh) in windows {
+            let half = (ww / 2, wh);
+            let full_ms = median_ms(|| {
+                decode_fit(&bytes, ww, wh).unwrap();
+            });
+            let half_ms = median_ms(|| {
+                decode_fit(&bytes, half.0, half.1).unwrap();
+            });
+            let a = fit_within((w, h), (ww, wh));
+            let b = fit_within((w, h), half);
+            let mb = |(x, y): (u32, u32)| f64::from(x * y * 4) / 1_048_576.0;
+            println!(
+                "BENCH {ww}x{wh}\t{w}x{h}\t{}x{}\t{full_ms:.1}\t{:.1}\t{}x{}\t{half_ms:.1}\t{:.1}",
+                a.0,
+                a.1,
+                mb(a),
+                b.0,
+                b.1,
+                mb(b)
+            );
+        }
+    }
+}
