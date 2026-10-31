@@ -110,26 +110,26 @@ fn slider_shows_only_when_pointer_is_near_bottom() {
 }
 
 #[test]
-fn clicking_left_end_jumps_to_last_page_right_to_left() {
+fn clicking_right_end_jumps_to_last_page() {
     let mut h = Harness::new("slider-click", 10);
     h.settle(vec![moved(W / 2.0, BAR_Y)]);
-    // 右綴じなので左寄りが後ろの頁。クリックはその場で飛ぶ
-    let x = 140.0;
+    // 右寄りが後ろの頁（→ キーで進む向きと同じ）。クリックはその場で飛ぶ
+    let x = W - 140.0;
     h.frame(vec![moved(x, BAR_Y), button(x, BAR_Y, true)]);
     let f = h.frame(vec![button(x, BAR_Y, false)]);
     assert!(!f.start_drag, "スライダーの上では窓を動かさない");
     h.settle(vec![]);
     assert!(h.app.page() >= 7, "{}", h.app.page());
-    // 左端の外までつまんで動かすと最終頁
+    // 右端の外までつまんで動かすと最終頁
     h.frame(vec![button(x, BAR_Y, true)]);
-    h.frame(vec![moved(0.0, BAR_Y)]);
-    h.frame(vec![button(0.0, BAR_Y, false)]);
-    h.settle(vec![]);
-    assert_eq!(h.app.page(), 9);
-    // 右端の外までなら 1 頁目
-    h.frame(vec![moved(x, BAR_Y), button(x, BAR_Y, true)]);
     h.frame(vec![moved(W, BAR_Y)]);
     h.frame(vec![button(W, BAR_Y, false)]);
+    h.settle(vec![]);
+    assert_eq!(h.app.page(), 9);
+    // 左端の外までなら 1 頁目
+    h.frame(vec![moved(x, BAR_Y), button(x, BAR_Y, true)]);
+    h.frame(vec![moved(0.0, BAR_Y)]);
+    h.frame(vec![button(0.0, BAR_Y, false)]);
     h.settle(vec![]);
     assert_eq!(h.app.page(), 0);
 }
@@ -137,10 +137,11 @@ fn clicking_left_end_jumps_to_last_page_right_to_left() {
 #[test]
 fn dragging_jumps_on_release_and_does_not_move_window() {
     let mut h = Harness::new("slider-drag", 10);
-    h.settle(vec![moved(W - 20.0, BAR_Y)]);
+    // 左端には頁番号の表示があるので、その右のスライダーの左寄りをつまむ
+    h.settle(vec![moved(120.0, BAR_Y)]);
     let mut start_drag = false;
-    h.frame(vec![button(W - 20.0, BAR_Y, true)]);
-    for x in [800.0, 600.0, 450.0] {
+    h.frame(vec![button(120.0, BAR_Y, true)]);
+    for x in [200.0, 300.0, 450.0] {
         let f = h.frame(vec![moved(x, BAR_Y)]);
         start_drag |= f.start_drag;
     }
@@ -179,9 +180,9 @@ fn preview_in(f: &Frame) -> Option<egui::Rect> {
 fn dragging_shows_preview_of_target_page_and_hides_on_release() {
     // 頁数を多くして、行き先が頁キャッシュ（表示中の前後）に無いようにする
     let mut h = Harness::new("slider-preview", 40);
-    h.settle(vec![moved(W - 20.0, BAR_Y)]);
-    h.frame(vec![button(W - 20.0, BAR_Y, true)]);
-    let x = 200.0; // 左寄り = 後ろの頁
+    h.settle(vec![moved(120.0, BAR_Y)]);
+    h.frame(vec![button(120.0, BAR_Y, true)]);
+    let x = W - 200.0; // 右寄り = 後ろの頁
     let mut found = None;
     let t = std::time::Instant::now();
     while found.is_none() && t.elapsed() < std::time::Duration::from_secs(5) {
@@ -190,8 +191,8 @@ fn dragging_shows_preview_of_target_page_and_hides_on_release() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     let rect = found.expect("つまんでいる間に行き先の縮小画像が出ない");
-    // つまみの近く（左寄り）に出る
-    assert!(rect.center().x < W / 2.0, "{rect:?}");
+    // つまみの近く（右寄り）に出る
+    assert!(rect.center().x > W / 2.0, "{rect:?}");
     assert_eq!(h.app.page(), 0, "つまんでいる間は飛ばない");
     // 離すと飛んで、縮小画像は消える
     h.frame(vec![button(x, BAR_Y, false)]);

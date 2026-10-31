@@ -1052,7 +1052,7 @@ impl ViewApp {
     }
 
     /// 窓の下端にカーソルがある間（とつまんでいる間）だけ、頁スライダーを頁の上に重ねて出す。
-    /// 右綴じなので右端が 1 頁目。つまんで動かす間は行き先の頁番号だけ出し、離したらそこへ飛ぶ
+    /// 左端が 1 頁目（→ キーで進む向きと同じ）。つまんで動かす間は行き先の頁番号だけ出し、離したらそこへ飛ぶ
     /// （動かすたびに同期復号しないため）。トラックのクリックはその場で飛ぶ。
     fn show_page_slider(&mut self, ctx: &egui::Context, count: usize) {
         let screen = ctx.content_rect();
@@ -1082,10 +1082,9 @@ impl ViewApp {
                             );
                             ui.add_space(12.0);
                             ui.spacing_mut().slider_width = ui.available_width();
-                            // 範囲を大→小にして右端を 1 頁目にする
                             let max = count.max(1) as f64;
                             ui.add(
-                                egui::Slider::new(&mut value, max..=1.0)
+                                egui::Slider::new(&mut value, 1.0..=max)
                                     .integer()
                                     .show_value(false),
                             )
@@ -1158,13 +1157,13 @@ impl ViewApp {
         let Some((tex, size)) = shown else {
             return;
         };
-        // つまみの位置（右端が 1 頁目）の上に、縦 PREVIEW_HEIGHT で縦横比を保って置く
+        // つまみの位置（左端が 1 頁目）の上に、縦 PREVIEW_HEIGHT で縦横比を保って置く
         let t = if count > 1 {
             target as f32 / (count - 1) as f32
         } else {
             0.0
         };
-        let x = bar.right() - t * bar.width();
+        let x = bar.left() + t * bar.width();
         let scale = PREVIEW_HEIGHT / size.y.max(1.0);
         let preview = egui::vec2(size.x * scale, PREVIEW_HEIGHT);
         let screen = ctx.content_rect();
