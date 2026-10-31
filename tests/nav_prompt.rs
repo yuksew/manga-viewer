@@ -9,7 +9,9 @@ use eframe::egui;
 use manga_viewer::index::{BookRow, Index, Status};
 use manga_viewer::neighbor::{NavDir, neighbor_in_dir, neighbor_in_rows, resolve_neighbor};
 use manga_viewer::scan::BookKind;
-use manga_viewer::view::{Nav, SPREAD_MIN_WIDTH, ViewApp, open_path, plan_nav, spread_active};
+use manga_viewer::view::{
+    Nav, PromptLayout, SPREAD_MIN_WIDTH, ViewApp, open_path, plan_nav, spread_active,
+};
 
 fn key_event(key: egui::Key) -> egui::Event {
     egui::Event::Key {
@@ -230,8 +232,8 @@ fn next_prompt_opens_next_file_without_db() {
     let text = frame(&mut app, vec![wheel(-1.0)]);
     assert_eq!(app.prompt(), Some(NavDir::Next));
     assert!(text.contains("次の冊を開きますか"), "{text}");
-    // プロンプト中の送り入力は無視
-    frame(&mut app, vec![key_event(egui::Key::ArrowLeft), wheel(1.0)]);
+    // プロンプト中の送り入力（キー・同じ向きのホイール）は無視
+    frame(&mut app, vec![key_event(egui::Key::ArrowLeft)]);
     frame(
         &mut app,
         vec![key_event(egui::Key::ArrowRight), wheel(-1.0)],
@@ -285,6 +287,112 @@ fn prev_prompt_no_keeps_book_yes_opens_previous() {
 }
 
 #[test]
+fn reverse_wheel_closes_prompt_without_paging() {
+    let dir = TmpDir::new("nav-reverse");
+    write_zip(&dir.0.join("v1.zip"), &["1.png", "2.png"]);
+    write_zip(&dir.0.join("v2.zip"), &["1.png", "2.png"]);
+    let mut app = app_for(&dir.0.join("v1.zip"));
+    frame(&mut app, vec![wheel(-1.0)]);
+    frame(&mut app, vec![wheel(-1.0)]);
+    assert_eq!(app.prompt(), Some(NavDir::Next));
+    // 同じ向き（下）は無視して出たまま
+    frame(&mut app, vec![wheel(-1.0), wheel(-1.0)]);
+    assert_eq!(app.prompt(), Some(NavDir::Next));
+    // 逆向き（上）で閉じる。冊も頁もそのまま
+    frame(&mut app, vec![wheel(1.0)]);
+    assert!(app.prompt().is_none());
+    let text = frame(&mut app, vec![]);
+    assert!(!text.contains("次の冊を開きますか"), "{text}");
+    assert_eq!((app.title(), app.page()), ("v1", 1));
+
+    // 前冊の確認は下ホイールで閉じる
+    frame(&mut app, vec![wheel(1.0)]);
+    frame(&mut app, vec![wheel(1.0)]);
+    assert_eq!(app.prompt(), Some(NavDir::Prev));
+    frame(&mut app, vec![wheel(1.0)]);
+    assert_eq!(app.prompt(), Some(NavDir::Prev));
+    frame(&mut app, vec![wheel(-1.0)]);
+    assert!(app.prompt().is_none());
+    assert_eq!((app.title(), app.page()), ("v1", 0));
+}
+
+/// 同じ `Context` で 1 フレーム回し、描画された（文字列, 位置）を返す（クリック試験用）。
+fn frame_ctx(
+    ctx: &egui::Context,
+    app: &mut ViewApp,
+    events: Vec<egui::Event>,
+) -> Vec<(String, egui::Pos2)> {
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1000.0, 800.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(raw, |ui| app.show(ui));
+    out.textures_delta.clear();
+    out.shapes
+        .iter()
+        .filter_map(|s| match &s.shape {
+            egui::epaint::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 確認のボタン `label` をマウスで押して離す。
+fn click_button(ctx: &egui::Context, app: &mut ViewApp, label: &str) {
+    let texts = frame_ctx(ctx, app, vec![]);
+    let pos = texts
+        .iter()
+        .find(|(t, _)| t == label)
+        .unwrap_or_else(|| panic!("{label} が描かれていない: {texts:?}"))
+        .1
+        + egui::vec2(8.0, 8.0);
+    let button = |pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    frame_ctx(ctx, app, vec![egui::Event::PointerMoved(pos)]);
+    frame_ctx(ctx, app, vec![button(true)]);
+    frame_ctx(ctx, app, vec![button(false)]);
+}
+
+#[test]
+fn prompt_buttons_answer_by_mouse_click() {
+    let dir = TmpDir::new("nav-mouse");
+    write_zip(&dir.0.join("v1.zip"), &["1.png"]);
+    write_zip(&dir.0.join("v2.zip"), &["1.png"]);
+    let mut app = app_for(&dir.0.join("v1.zip"));
+    let ctx = egui::Context::default();
+    frame_ctx(&ctx, &mut app, vec![key_event(egui::Key::ArrowRight)]);
+    assert_eq!(app.prompt(), Some(NavDir::Next));
+    // いいえ: 閉じて今の冊のまま
+    click_button(&ctx, &mut app, "いいえ");
+    assert!(app.prompt().is_none());
+    assert_eq!(app.title(), "v1");
+    // はい: 次の冊へ
+    frame_ctx(&ctx, &mut app, vec![key_event(egui::Key::ArrowRight)]);
+    assert_eq!(app.prompt(), Some(NavDir::Next));
+    click_button(&ctx, &mut app, "はい");
+    assert!(app.prompt().is_none());
+    assert_eq!(app.title(), "v2");
+}
+
+#[test]
+fn prompt_floats_with_yes_no_buttons() {
+    let dir = TmpDir::new("nav-click");
+    write_zip(&dir.0.join("v1.zip"), &["1.png"]);
+    let mut app = app_for(&dir.0.join("v1.zip"));
+    let text = frame(&mut app, vec![key_event(egui::Key::ArrowRight)]);
+    assert!(text.contains("はい") && text.contains("いいえ"), "{text}");
+    assert_eq!(app.prompt(), Some(NavDir::Next));
+}
+
+#[test]
 fn spread_prev_prompt_only_on_left_first_page() {
     let dir = TmpDir::new("nav-spread-first");
     write_zip(&dir.0.join("a.zip"), &["1.png", "2.png", "3.png", "4.png"]);
@@ -314,4 +422,21 @@ fn index_order_is_used_when_db_is_given() {
     assert_eq!(app.prompt(), Some(NavDir::Next));
     frame(&mut app, vec![key_event(egui::Key::Enter)]);
     assert_eq!(app.title(), "b");
+}
+
+#[test]
+fn prompt_panel_fits_narrow_windows() {
+    // 広い窓は既定の幅
+    assert_eq!(PromptLayout::fit(1200.0).panel, PromptLayout::WIDE);
+    for width in [560.0, 480.0, 400.0, 320.0, 260.0] {
+        let l = PromptLayout::fit(width);
+        assert!(
+            l.panel <= width - PromptLayout::EDGE * 2.0,
+            "{width}: {l:?}"
+        );
+        // ボタン 2 つと間が内側に収まる
+        let inner = l.panel - l.margin * 2.0;
+        assert!(l.button.x * 2.0 + l.gap <= inner + 0.01, "{width}: {l:?}");
+        assert!(l.button.x >= 60.0, "{width}: {l:?}");
+    }
 }

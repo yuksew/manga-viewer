@@ -153,6 +153,61 @@ fn nav_delta(i: &egui::InputState) -> isize {
         .sum()
 }
 
+/// 確認中に、確認の向きと逆へホイールしたか（次冊の確認中に上、前冊の確認中に下）。
+/// 逆向きは「戻りたい」意思なので、確認を閉じる（いいえ扱い）。同じ向きのホイールは従来どおり無視。
+fn wheel_reverses(i: &egui::InputState, dir: NavDir) -> bool {
+    i.events.iter().any(|e| match e {
+        egui::Event::MouseWheel { delta, .. } => match dir {
+            NavDir::Next => delta.y > 0.0,
+            NavDir::Prev => delta.y < 0.0,
+        },
+        _ => false,
+    })
+}
+
+/// 次冊/前冊の確認パネルの寸法。窓が狭いときは余白・ボタン・見出しを縮めて窓に収める。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PromptLayout {
+    /// パネルの幅（余白込み）
+    pub panel: f32,
+    /// パネル内側の余白
+    pub margin: f32,
+    /// ボタン 1 つの寸法
+    pub button: egui::Vec2,
+    /// ボタンの間
+    pub gap: f32,
+    /// 見出しの文字の大きさ
+    pub title_size: f32,
+}
+
+impl PromptLayout {
+    /// 広い窓でのパネル幅
+    pub const WIDE: f32 = 476.0;
+    /// パネルと窓の端の最小の隙間（片側）
+    pub const EDGE: f32 = 12.0;
+    /// 実寸を測る前の高さの見込み
+    const HEIGHT_GUESS: f32 = 220.0;
+
+    /// 窓幅 `width` に収まる寸法。
+    #[must_use]
+    pub fn fit(width: f32) -> Self {
+        let panel = Self::WIDE.min(width - Self::EDGE * 2.0).max(200.0);
+        let narrow = panel < Self::WIDE;
+        let margin = if narrow { 16.0 } else { 28.0 };
+        let gap = if narrow { 12.0 } else { 20.0 };
+        let inner = panel - margin * 2.0;
+        let button_w = ((inner - gap) / 2.0).min(170.0);
+        Self {
+            panel,
+            margin,
+            button: egui::vec2(button_w, 60.0),
+            gap,
+            // 見出し 10 文字が 1 行に収まる大きさ（全角 1 文字 ≒ 文字の大きさ）
+            title_size: (inner / 10.5).clamp(18.0, 28.0),
+        }
+    }
+}
+
 /// 頁送りの結果。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Nav {
@@ -353,28 +408,89 @@ impl ViewApp {
         }
     }
 
-    /// 確認の表示とボタン。Enter=はい / Esc=いいえ。
+    /// 確認を窓中央に浮かせて出す（背景は暗くする）。Enter=はい / Esc=いいえ / 逆向きホイール=閉じる。
+    /// `keys` が偽（確認を出したフレーム）は入力で答えない。
     fn show_prompt(&mut self, ui: &mut egui::Ui, dir: NavDir, keys: bool) {
         let ctx = ui.ctx().clone();
         let mut answer = None;
         if !keys {
         } else if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
             answer = Some(true);
-        } else if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        } else if ctx.input(|i| i.key_pressed(egui::Key::Escape) || wheel_reverses(i, dir)) {
             answer = Some(false);
         }
-        ui.horizontal(|ui| {
-            ui.label(match dir {
-                NavDir::Next => "最後の頁です。次の冊を開きますか？（Enter=はい / Esc=いいえ）",
-                NavDir::Prev => "最初の頁です。前の冊を開きますか？（Enter=はい / Esc=いいえ）",
+
+        let dim = egui::LayerId::new(egui::Order::Middle, egui::Id::unique("nav-prompt-dim"));
+        ctx.layer_painter(dim).rect_filled(
+            ctx.content_rect(),
+            0.0,
+            egui::Color32::from_black_alpha(150),
+        );
+
+        let (head, title, back) = match dir {
+            NavDir::Next => ("最後の頁です", "次の冊を開きますか？", "上ホイールで閉じる"),
+            NavDir::Prev => ("最初の頁です", "前の冊を開きますか？", "下ホイールで閉じる"),
+        };
+        let screen = ctx.content_rect();
+        let lay = PromptLayout::fit(screen.width());
+        // Area は初回フレームを寸法測りで不可視にするので使わず、前面レイヤーの子 Ui を窓中央に置く
+        // （出したフレームから見える）。高さは中身次第なので前フレームの実寸で中央に寄せる
+        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("nav-prompt"));
+        let height_id = egui::Id::unique("nav-prompt-height");
+        let height = ctx
+            .data(|d| d.get_temp::<f32>(height_id))
+            .unwrap_or(PromptLayout::HEIGHT_GUESS);
+        let rect = egui::Rect::from_center_size(screen.center(), egui::vec2(lay.panel, height));
+        let mut panel_ui = ui.new_child(egui::UiBuilder::new().layer_id(layer).max_rect(rect));
+        let inner = lay.panel - lay.margin * 2.0;
+        let shown = egui::Frame::popup(panel_ui.style())
+            .inner_margin(egui::Margin::same(lay.margin as i8))
+            .corner_radius(14)
+            .show(&mut panel_ui, |ui| {
+                ui.set_width(inner);
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new(head).size(16.0).weak());
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(title).size(lay.title_size).strong());
+                    ui.add_space(20.0);
+                });
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = lay.gap;
+                    ui.add_space((inner - lay.button.x * 2.0 - lay.gap) / 2.0);
+                    let yes = egui::Button::new(egui::RichText::new("はい").size(24.0).strong())
+                        .min_size(lay.button)
+                        .fill(ui.visuals().selection.bg_fill);
+                    if ui.add(yes).clicked() {
+                        answer = Some(true);
+                    }
+                    let no = egui::Button::new(egui::RichText::new("いいえ").size(24.0))
+                        .min_size(lay.button);
+                    if ui.add(no).clicked() {
+                        answer = Some(false);
+                    }
+                });
+                ui.add_space(12.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new(if lay.panel < PromptLayout::WIDE {
+                            // 狭いときは句の途中で折り返さないよう、ホイールの案内を次の行に出す
+                            format!(
+                                "Enter = はい ／ Esc = いいえ
+{back}"
+                            )
+                        } else {
+                            format!("Enter = はい ／ Esc = いいえ ／ {back}")
+                        })
+                        .size(14.0)
+                        .weak(),
+                    );
+                });
             });
-            if ui.button("はい").clicked() {
-                answer = Some(true);
-            }
-            if ui.button("いいえ").clicked() {
-                answer = Some(false);
-            }
-        });
+        let measured = shown.response.rect.height();
+        if (measured - height).abs() > 0.5 {
+            ctx.data_mut(|d| d.insert_temp(height_id, measured));
+            ctx.request_repaint();
+        }
         if let Some(yes) = answer {
             self.answer_prompt(yes);
         }
@@ -407,7 +523,7 @@ impl ViewApp {
             return;
         }
 
-        // 確認中は他の送り入力（キー/ホイール）を見ない。出した同じフレームの Enter/Esc も見ない
+        // 確認中は他の送り入力（キー/ホイール）を見ない。出した同じフレームの Enter/Esc/ホイールも見ない
         let was_prompting = self.prompt.is_some();
         if !was_prompting {
             self.handle_input(ctx);
@@ -646,15 +762,31 @@ fn find_japanese_font(dir: &Path) -> Option<(&'static str, Vec<u8>)> {
         .find_map(|name| Some((name, std::fs::read(dir.join(name)).ok()?)))
 }
 
+/// 日本語フォントの字面を下げる量（文字の大きさに対する比）。
+const JP_FONT_Y_OFFSET: f32 = 0.33;
+
 fn register_font(ctx: &egui::Context, data: Vec<u8>) {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
         "jp".into(),
-        std::sync::Arc::new(egui::FontData::from_owned(data)),
+        std::sync::Arc::new(egui::FontData::from_owned(data).tweak(egui::FontTweak {
+            // 游ゴシック等は行の箱の中で字面が上に寄る（ボタン中央より上に見える）ので下げる
+            y_offset_factor: JP_FONT_Y_OFFSET,
+            ..Default::default()
+        })),
     );
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts.families.entry(family).or_default().push("jp".into());
-    }
+    // 文章（Proportional）は日本語フォントを先頭に置き、英数字も同じフォントで描く。
+    // 末尾の代替のままだと英数字は既定フォント・かなは日本語フォントになり、行の中で高さがずれる
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "jp".into());
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .push("jp".into());
     ctx.set_fonts(fonts);
 }
 
