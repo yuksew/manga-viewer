@@ -202,11 +202,11 @@ fn spread_toggle_shows_two_pages_and_steps_by_two() {
     assert!(app.prompt().is_none());
     frame(&mut app, vec![wheel(-1.0)]);
     assert_eq!(app.prompt(), Some(NavDir::Next));
-    // 単頁に戻すと組の先頭の頁
+    // 単ページに戻すと組の先頭の頁
     app.answer_prompt(false);
     let text = frame(&mut app, vec![key_event(egui::Key::F)]);
     assert!(text.contains("4/5  ["), "{text}");
-    // 単頁で組の後ろ側（5 頁目）にいて見開きにすると、その組（4-5）に揃う
+    // 単ページで組の後ろ側（5 頁目）にいて見開きにすると、その組（4-5）に揃う
     frame(&mut app, vec![key_event(egui::Key::ArrowRight)]);
     let text = frame(&mut app, vec![key_event(egui::Key::F)]);
     assert!(text.contains("4-5/5  ["), "{text}");
@@ -234,7 +234,10 @@ fn spread_last_is_right_page() {
     assert_eq!(app.page(), 1); // 2-3 の見開き
     let text = frame(&mut app, vec![key_event(egui::Key::ArrowRight)]);
     assert_eq!(app.page(), 3); // 相手の無い 4 頁目は 1 枚
-    assert!(text.contains("4/4  [見開き（最終頁は 1 枚）]"), "{text}");
+    assert!(
+        text.contains("4/4  [見開き（最後のページは 1 枚）]"),
+        "{text}"
+    );
     frame(&mut app, vec![key_event(egui::Key::ArrowRight)]);
     assert_eq!(app.prompt(), Some(NavDir::Next));
 }
@@ -250,7 +253,7 @@ fn next_prompt_opens_next_file_without_db() {
     assert_eq!(app.page(), 1);
     let text = frame(&mut app, vec![wheel(-1.0)]);
     assert_eq!(app.prompt(), Some(NavDir::Next));
-    assert!(text.contains("次の冊を開きますか"), "{text}");
+    assert!(text.contains("次のファイルを開きますか"), "{text}");
     // プロンプト中の送り入力（キー・同じ向きのホイール）は無視
     frame(&mut app, vec![key_event(egui::Key::ArrowLeft)]);
     frame(
@@ -274,10 +277,10 @@ fn next_prompt_opens_next_file_without_db() {
     frame(&mut app, vec![key_event(egui::Key::ArrowRight)]);
     let text = frame(&mut app, vec![key_event(egui::Key::Enter)]);
     assert_eq!(app.title(), "v3");
-    assert!(text.contains("次の冊はありません"), "{text}");
+    assert!(text.contains("次のファイルはありません"), "{text}");
     // 次の送りで通知は消える
     let text = frame(&mut app, vec![wheel(1.0)]);
-    assert!(!text.contains("次の冊はありません"), "{text}");
+    assert!(!text.contains("次のファイルはありません"), "{text}");
 }
 
 #[test]
@@ -288,7 +291,7 @@ fn prev_prompt_no_keeps_book_yes_opens_previous() {
     let mut app = app_for(&dir.0.join("v2.zip"));
     let text = frame(&mut app, vec![wheel(1.0)]);
     assert_eq!(app.prompt(), Some(NavDir::Prev));
-    assert!(text.contains("前の冊を開きますか"), "{text}");
+    assert!(text.contains("前のファイルを開きますか"), "{text}");
     // Esc = いいえ（窓は閉じず、プロンプトだけ消える）
     frame(&mut app, vec![key_event(egui::Key::Escape)]);
     assert!(app.prompt().is_none());
@@ -302,7 +305,7 @@ fn prev_prompt_no_keeps_book_yes_opens_previous() {
     frame(&mut app, vec![key_event(egui::Key::PageUp)]);
     let text = frame(&mut app, vec![key_event(egui::Key::Enter)]);
     assert_eq!(app.title(), "v1");
-    assert!(text.contains("前の冊はありません"), "{text}");
+    assert!(text.contains("前のファイルはありません"), "{text}");
 }
 
 #[test]
@@ -321,7 +324,7 @@ fn reverse_wheel_closes_prompt_without_paging() {
     frame(&mut app, vec![wheel(1.0)]);
     assert!(app.prompt().is_none());
     let text = frame(&mut app, vec![]);
-    assert!(!text.contains("次の冊を開きますか"), "{text}");
+    assert!(!text.contains("次のファイルを開きますか"), "{text}");
     assert_eq!((app.title(), app.page()), ("v1", 1));
 
     // 前冊の確認は下ホイールで閉じる

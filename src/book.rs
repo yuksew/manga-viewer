@@ -16,9 +16,9 @@ pub enum BookError {
     Zip(String),
     #[error("暗号化された ZIP は非対応です")]
     Encrypted,
-    #[error("頁が 0 枚です")]
+    #[error("ページが 0 枚です")]
     NoPages,
-    #[error("頁番号が範囲外です: {0}")]
+    #[error("ページ番号が範囲外です: {0}")]
     PageOutOfRange(usize),
 }
 

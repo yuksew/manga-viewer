@@ -104,7 +104,7 @@ fn broken_page_shows_error_text_then_recovers_on_next_page() {
     let mut app = ViewApp::new("t".into(), book, 0, None);
     let (images, text) = frame(&mut app, None);
     assert!(page_texture(&images).is_none());
-    assert!(text.contains("この頁は表示できません"), "{text}");
+    assert!(text.contains("このページは表示できません"), "{text}");
     assert!(text.contains("署名"), "{text}");
 
     let (images, text) = frame(&mut app, Some(egui::Key::ArrowRight));
@@ -125,7 +125,7 @@ fn body_corrupt_page_shows_error_text() {
     let mut app = ViewApp::new("t".into(), book, 0, None);
     let (images, text) = frame(&mut app, None);
     assert!(page_texture(&images).is_none());
-    assert!(text.contains("この頁は表示できません"), "{text}");
+    assert!(text.contains("このページは表示できません"), "{text}");
 }
 
 #[test]

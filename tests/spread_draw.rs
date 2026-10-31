@@ -145,7 +145,7 @@ fn f_works_from_text_event_only_and_not_twice() {
     let both = vec![key_event(egui::Key::F), egui::Event::Text("f".into())];
     let (text, _) = run(&mut app, 1000.0, both);
     assert!(
-        text.contains("1/3  [") && text.contains("単頁（F で見開き）"),
+        text.contains("1/3  [") && text.contains("単ページ（F で見開き）"),
         "{text}"
     );
 }
@@ -182,12 +182,12 @@ fn toggling_f_reuses_cached_pages() {
 
 #[test]
 fn mode_label_and_prefetch_plan() {
-    assert!(mode_label(false, 900.0, false, 0, 5).contains("単頁"));
+    assert!(mode_label(false, 900.0, false, 0, 5).contains("単ページ"));
     assert!(mode_label(true, 900.0, true, 0, 5).contains("表紙"));
-    assert!(mode_label(true, 900.0, true, 1, 5).contains("F で単頁"));
-    assert!(mode_label(true, 900.0, true, 4, 5).contains("F で単頁")); // 4 は 3-4 の組
+    assert!(mode_label(true, 900.0, true, 1, 5).contains("F で単ページ"));
+    assert!(mode_label(true, 900.0, true, 4, 5).contains("F で単ページ")); // 4 は 3-4 の組
     assert!(mode_label(true, 600.0, false, 0, 5).contains("見開きにできません"));
-    assert!(mode_label(true, 900.0, true, 5, 6).contains("最終頁"));
+    assert!(mode_label(true, 900.0, true, 5, 6).contains("最後のページ"));
     assert_eq!(prefetch_plan(5, false, 20), vec![6, 7, 4, 3]);
     assert_eq!(prefetch_plan(3, true, 20), vec![5, 6, 7, 8, 2, 1, 0]);
     assert_eq!(prefetch_plan(4, true, 20), prefetch_plan(3, true, 20)); // 4 は 3-4 の組

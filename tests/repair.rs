@@ -153,7 +153,7 @@ fn view_still_errors_on_unrepairable_page() {
     let book = Book::open(&zip, BookKind::Zip).unwrap();
     let mut app = ViewApp::new("t".into(), book, 0, None);
     let text = frame_text(&mut app, None);
-    assert!(text.contains("この頁は表示できません"), "{text}");
+    assert!(text.contains("このページは表示できません"), "{text}");
     assert!(!text.contains("修復して表示"), "{text}");
 }
 

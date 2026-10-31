@@ -192,7 +192,7 @@ impl Library {
 
         let running = self.thumbs_running.load(Ordering::SeqCst);
         let head = format!(
-            "{}  {} 冊{}",
+            "{}  {} ファイル{}",
             self.root
                 .as_deref()
                 .map_or_else(|| "（全ルート）".to_string(), |r| r.display().to_string()),
@@ -209,7 +209,7 @@ impl Library {
         }
         if self.rows.is_empty() {
             ui.centered_and_justified(|ui| {
-                ui.label("索引に冊がありません（`manga-viewer index <root>` を先に実行）")
+                ui.label("索引にファイルがありません（`manga-viewer index <root>` を先に実行）")
             });
             return action;
         }
@@ -320,7 +320,7 @@ impl Library {
             self.status = Some(format!(
                 "開けません（{}）: {}",
                 row.title,
-                row.error.as_deref().unwrap_or("壊れた冊です")
+                row.error.as_deref().unwrap_or("壊れたファイルです")
             ));
             return None;
         }
@@ -389,9 +389,9 @@ impl Library {
         ui.painter_at(title_rect)
             .galley(title_rect.min, galley, color);
         let pages = if broken {
-            "壊れた冊".to_string()
+            "壊れたファイル".to_string()
         } else {
-            format!("{} 頁", row.page_count)
+            format!("{} ページ", row.page_count)
         };
         painter.text(
             egui::pos2(rect.left() + 8.0, rect.bottom() - 8.0),

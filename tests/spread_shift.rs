@@ -26,7 +26,7 @@ fn shifted_pairs_start_at_the_first_page() {
         Nav::Prompt(manga_viewer::neighbor::NavDir::Prev)
     );
     assert_eq!(prefetch_plan(2, l, 20), vec![4, 5, 6, 7, 1, 0]);
-    // 単頁・表紙 1 枚の見開きは従来どおり
+    // 単ページ・表紙 1 枚の見開きは従来どおり
     assert_eq!(Layout::from(false), Layout::Single);
     assert_eq!(Layout::from(true), Layout::Spread);
     assert_eq!(spread_pages(1, Layout::Spread, 5), (1, 2));
@@ -96,10 +96,10 @@ fn s_shifts_pairs_and_shows_it() {
         "3-4/5  [見開き・組ずらし（S で戻す）]"
     );
     let s = h.key(egui::Key::ArrowRight);
-    assert!(s.starts_with("5/5  [見開き・組ずらし（最終頁"), "{s}");
+    assert!(s.starts_with("5/5  [見開き・組ずらし（最後のページ"), "{s}");
     // 戻すと 5 頁目は 4-5 の組
     let s = h.key(egui::Key::S);
-    assert!(s.starts_with("4-5/5  [見開き（F で単頁）"), "{s}");
+    assert!(s.starts_with("4-5/5  [見開き（F で単ページ）"), "{s}");
     assert!(!h.app.shifted());
 }
 

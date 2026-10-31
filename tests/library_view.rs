@@ -84,7 +84,7 @@ fn png(w: u32, h: u32) -> Vec<u8> {
     buf.into_inner()
 }
 
-/// root に v1, v2, v10（自然順）と壊れた冊を置き、索引する。
+/// root に v1, v2, v10（自然順）と壊れたファイルを置き、索引する。
 fn setup(t: &TmpDir) -> (std::path::PathBuf, std::path::PathBuf) {
     let root = t.0.join("root");
     for name in ["v10", "v2", "v1"] {
@@ -112,9 +112,9 @@ fn lists_books_in_natural_order_with_broken_marked() {
             .unwrap_or_else(|| panic!("{s} が無い:\n{text}"))
     };
     assert!(pos("v1\n") < pos("v2\n") && pos("v2\n") < pos("v10\n"));
-    assert!(text.contains("4 冊"), "{text}");
-    assert!(text.contains("2 頁"));
-    assert!(text.contains("壊れた冊") && text.contains("×"));
+    assert!(text.contains("4 ファイル"), "{text}");
+    assert!(text.contains("2 ページ"));
+    assert!(text.contains("壊れたファイル") && text.contains("×"));
 }
 
 #[test]
@@ -139,7 +139,7 @@ fn enter_opens_selected_book_and_esc_returns_to_list() {
     assert!(h.app.in_library());
     assert_eq!(h.app.library().unwrap().selected(), 1);
     let text = h.frame(vec![]).0;
-    assert!(text.contains("4 冊"), "{text}");
+    assert!(text.contains("4 ファイル"), "{text}");
     assert_eq!(h.app.window_title(), "manga-viewer");
 }
 

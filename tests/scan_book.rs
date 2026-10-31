@@ -111,7 +111,7 @@ fn broken_books_are_listed_but_fail_to_open() {
     std::fs::write(r.join("garbage.zip"), b"not a zip").unwrap();
 
     let books = scan_root(r).unwrap();
-    assert_eq!(books.len(), 4, "壊れた冊も一覧に出る");
+    assert_eq!(books.len(), 4, "壊れたファイルも一覧に出る");
     for b in &books {
         assert!(
             Book::open(&b.path, b.kind).is_err(),

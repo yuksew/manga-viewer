@@ -222,21 +222,21 @@ pub fn mode_label<'a>(
         ""
     };
     if !want {
-        "単頁（F で見開き）".to_string()
+        "単ページ（F で見開き）".to_string()
     } else if !layout.is_spread() {
-        format!("単頁（窓幅 {width:.0} が {SPREAD_MIN_WIDTH:.0} 未満のため見開きにできません）")
+        format!("単ページ（窓幅 {width:.0} が {SPREAD_MIN_WIDTH:.0} 未満のため見開きにできません）")
     } else if start == end && pages.is_wide(start) {
-        format!("見開き{shifted}（横長の頁は 1 枚）")
+        format!("見開き{shifted}（横長のページは 1 枚）")
     } else if start == end && start == 0 && count > 1 {
         "見開き（表紙は 1 枚・S で組をずらす）".to_string()
     } else if start == end && end + 1 < count {
         format!("見開き{shifted}（次が横長のため 1 枚）")
     } else if start == end {
-        format!("見開き{shifted}（最終頁は 1 枚）")
+        format!("見開き{shifted}（最後のページは 1 枚）")
     } else if layout == Layout::Shifted {
         "見開き・組ずらし（S で戻す）".to_string()
     } else {
-        "見開き（F で単頁）".to_string()
+        "見開き（F で単ページ）".to_string()
     }
 }
 
@@ -793,8 +793,8 @@ impl ViewApp {
             Some(path) => self.open_dropped(&path),
             None => {
                 self.notice = Some(match dir {
-                    NavDir::Next => "次の冊はありません",
-                    NavDir::Prev => "前の冊はありません",
+                    NavDir::Next => "次のファイルはありません",
+                    NavDir::Prev => "前のファイルはありません",
                 });
             }
         }
@@ -819,9 +819,9 @@ impl ViewApp {
             egui::Color32::from_black_alpha(150),
         );
 
-        let (head, title, back) = match dir {
-            NavDir::Next => ("最後の頁です", "次の冊を開きますか？", "上ホイールで閉じる"),
-            NavDir::Prev => ("最初の頁です", "前の冊を開きますか？", "下ホイールで閉じる"),
+        let (head, title) = match dir {
+            NavDir::Next => ("最後のページです", "次のファイルを開きますか？"),
+            NavDir::Prev => ("最初のページです", "前のファイルを開きますか？"),
         };
         let screen = ctx.content_rect();
         let lay = PromptLayout::fit(screen.width());
@@ -860,22 +860,6 @@ impl ViewApp {
                     if ui.add(no).clicked() {
                         answer = Some(false);
                     }
-                });
-                ui.add_space(12.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        egui::RichText::new(if lay.panel < PromptLayout::WIDE {
-                            // 狭いときは句の途中で折り返さないよう、ホイールの案内を次の行に出す
-                            format!(
-                                "Enter = はい ／ Esc = いいえ
-{back}"
-                            )
-                        } else {
-                            format!("Enter = はい ／ Esc = いいえ ／ {back}")
-                        })
-                        .size(14.0)
-                        .weak(),
-                    );
                 });
             });
         let measured = shown.response.rect.height();
@@ -1540,7 +1524,7 @@ fn draw_slot(ui: &mut egui::Ui, area: egui::Rect, slot: &Slot, align: egui::Alig
         if let Some(msg) = &slot.error {
             ui.colored_label(
                 egui::Color32::LIGHT_RED,
-                format!("この頁は表示できません: {msg}"),
+                format!("このページは表示できません: {msg}"),
             );
         } else if let Some(tex) = &slot.texture {
             if let Some(note) = slot.note {

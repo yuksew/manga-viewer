@@ -39,15 +39,15 @@ fn wide_page_breaks_pairs() {
         groups(Layout::Shifted),
         [(0, 1), (2, 3), (4, 4), (5, 6), (7, 7)]
     );
-    // 単頁は変わらない
+    // 単ページは変わらない
     assert_eq!(spread_pages(4, Layout::Single, pages), (4, 4));
     // 送りも組に従う
     assert_eq!(plan_nav(3, 1, Layout::Spread, pages), Nav::Page(4));
     assert_eq!(plan_nav(4, 1, Layout::Spread, pages), Nav::Page(5));
     assert_eq!(plan_nav(5, -1, Layout::Spread, pages), Nav::Page(4));
-    assert!(mode_label(true, 1000.0, Layout::Spread, 4, pages).contains("横長の頁は 1 枚"));
+    assert!(mode_label(true, 1000.0, Layout::Spread, 4, pages).contains("横長のページは 1 枚"));
     assert!(mode_label(true, 1000.0, Layout::Spread, 3, pages).contains("次が横長のため 1 枚"));
-    assert!(mode_label(true, 1000.0, Layout::Spread, 7, pages).contains("最終頁は 1 枚"));
+    assert!(mode_label(true, 1000.0, Layout::Spread, 7, pages).contains("最後のページは 1 枚"));
     // 寸法が分からなければ（頁数だけ）従来どおり
     assert_eq!(spread_pages(3, Layout::Spread, 8), (3, 4));
 }
@@ -135,7 +135,7 @@ fn wide_page_is_shown_alone_in_spread() {
         assert!(s.starts_with("2-3/6"), "{s}");
         let (s, rects) = h.key(egui::Key::ArrowRight);
         if s.starts_with("4/6") {
-            assert!(s.contains("横長の頁は 1 枚"), "{s}");
+            assert!(s.contains("横長のページは 1 枚"), "{s}");
             // 横長の頁は窓の幅いっぱいに使える（半分に縮めない）
             assert_eq!(rects.len(), 1, "{rects:?}");
             break;

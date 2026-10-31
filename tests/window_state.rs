@@ -69,7 +69,7 @@ fn spread_is_saved_and_restored() {
     next.restore_state(&storage);
     assert!(next.spread_wanted());
 
-    // 単頁に戻して終えれば、次は単頁
+    // 単ページに戻して終えれば、次は単ページ
     let mut next = next.with_persist(true);
     press_f(&mut next);
     next.save(&mut storage);

@@ -160,7 +160,7 @@ fn page_texture_fits_window_and_grows_with_it() {
     assert_eq!(page.size, [1396, 2048]);
 }
 
-/// 一覧から開いた直後は先頭頁を同期で復号せず、表紙を出しておいて裏で読み、届いたら差し替える。
+/// 一覧から開いた直後は先頭ページを同期で復号せず、表紙を出しておいて裏で読み、届いたら差し替える。
 #[test]
 fn opening_from_library_shows_cover_until_first_page_arrives() {
     let t = TmpDir::new("fit-placeholder");
@@ -192,7 +192,7 @@ fn opening_from_library_shows_cover_until_first_page_arrives() {
     frame(&ctx, &mut app, size, vec![enter]);
     assert!(!app.in_library());
     frame(&ctx, &mut app, size, vec![]); // 開いた最初の閲覧フレーム
-    assert_eq!(app.sync_loads(), 0, "先頭頁を同期で復号した");
+    assert_eq!(app.sync_loads(), 0, "先頭ページを同期で復号した");
     assert!(app.showing_placeholder());
 
     let mut arrived = false;

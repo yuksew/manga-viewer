@@ -200,7 +200,7 @@ fn b4_open_first_page() {
     }
 }
 
-/// 724 冊（各 28 頁、頁は小さい）の root を作る。`cover` があれば各冊の先頭頁をそれにする。
+/// 724 冊（各 28 頁、頁は小さい）の root を作る。`cover` があれば各冊の先頭ページをそれにする。
 fn root_724(dir: &Path, cover: Option<&[u8]>, n: usize) -> std::path::PathBuf {
     let root = dir.join("root");
     let names: Vec<String> = (1..=28).map(|i| format!("{i:03}.png")).collect();

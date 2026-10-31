@@ -28,9 +28,9 @@ pub struct Cover {
 /// 表紙を作れなかった理由。
 #[derive(Debug, thiserror::Error)]
 pub enum CoverError {
-    #[error("先頭頁を読めません: {0}")]
+    #[error("先頭ページを読めません: {0}")]
     Read(String),
-    #[error("先頭頁を復号できません: {0}")]
+    #[error("先頭ページを復号できません: {0}")]
     Decode(String),
     #[error("JPEG にできません: {0}")]
     Encode(String),

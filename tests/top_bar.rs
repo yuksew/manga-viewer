@@ -58,14 +58,14 @@ fn status_is_drawn_only_near_top() {
     let ctx = egui::Context::default();
     let (text, _) = frame(&ctx, &mut app, Some(egui::pos2(W / 2.0, H / 2.0)), vec![]);
     assert!(!text.contains("1/3"), "{text}");
-    assert_eq!(app.status(), "1/3  [単頁（F で見開き）]");
+    assert_eq!(app.status(), "1/3  [単ページ（F で見開き）]");
     let (text, _) = frame(
         &ctx,
         &mut app,
         Some(egui::pos2(W / 2.0, TOP_ZONE - 4.0)),
         vec![],
     );
-    assert!(text.contains("1/3  [単頁"), "{text}");
+    assert!(text.contains("1/3  [単ページ"), "{text}");
     // 離れたら消える
     let (text, _) = frame(&ctx, &mut app, Some(egui::pos2(W / 2.0, H / 2.0)), vec![]);
     assert!(!text.contains("1/3"), "{text}");
@@ -87,7 +87,7 @@ fn notice_is_shown_without_hover() {
     frame(&ctx, &mut app, middle, vec![key(egui::Key::ArrowRight)]);
     let (text, _) = frame(&ctx, &mut app, middle, vec![key(egui::Key::Enter)]);
     // 次の冊の候補が無い通知は、カーソルが真ん中でも出る（頁番号は出さない）
-    assert!(text.contains("次の冊はありません"), "{text}");
+    assert!(text.contains("次のファイルはありません"), "{text}");
     assert!(!text.contains("1/1"), "{text}");
 }
 
