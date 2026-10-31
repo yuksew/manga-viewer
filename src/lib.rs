@@ -5,6 +5,7 @@ pub mod decode;
 pub mod drag;
 pub mod imgcheck;
 pub mod index;
+pub mod library;
 pub mod natural;
 pub mod neighbor;
 pub mod scan;

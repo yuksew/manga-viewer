@@ -1,6 +1,7 @@
 //! 単独ウィンドウの閲覧（p0-6b）。`manga-viewer view` から呼ぶ。
 //!
 //! 1 冊を開いて 1 頁を窓に収めて表示し、→/PageDown/Space で次、←/PageUp で前、Esc で終了。
+//! 一覧（[`crate::library`]）から開いたときは、Esc で一覧へ戻る。
 //! 復号は [`crate::decode`]（`imgcheck` を通ったバイトだけ）。壊れた頁は画像を出さずエラー文言を出す。
 
 use std::collections::{HashMap, HashSet};
@@ -16,6 +17,7 @@ use crate::book::Book;
 use crate::decode::{self, Decoded};
 use crate::drag::{Drag, DragInput};
 use crate::index::{BookRow, Index, Status};
+use crate::library::{Action, Library};
 use crate::neighbor::{NavDir, resolve_neighbor};
 use crate::scan::BookKind;
 
@@ -286,6 +288,8 @@ pub struct ViewApp {
     /// 窓ドラッグ移動の状態
     drag: Drag,
     deadline: Option<Instant>,
+    /// 冊の一覧。あれば冊を開いていない間は一覧を出し、閲覧中の Esc で一覧へ戻る
+    library: Option<Library>,
 }
 
 impl ViewApp {
@@ -324,7 +328,70 @@ impl ViewApp {
             visible: Vec::new(),
             drag: Drag::default(),
             deadline: None,
+            library: None,
         }
+    }
+
+    /// 冊の一覧から始める窓（#1）。次冊/前冊は一覧と同じ索引の順で探す。
+    #[must_use]
+    pub fn with_library(library: Library) -> Self {
+        let (db, root) = library.source();
+        let mut app = Self::empty().with_index(db, root);
+        app.library = Some(library);
+        app
+    }
+
+    /// 一覧を出しているか（冊を開いていない・一覧がある）。
+    #[must_use]
+    pub fn in_library(&self) -> bool {
+        self.book.is_none() && self.library.is_some()
+    }
+
+    /// 一覧（あれば）。
+    #[must_use]
+    pub fn library(&self) -> Option<&Library> {
+        self.library.as_ref()
+    }
+
+    /// 開いている冊を閉じて一覧へ戻る。一覧では読んでいた冊を選んでおく。
+    fn back_to_library(&mut self) {
+        let path = self.book.take().map(|b| b.path().to_path_buf());
+        self.prompt = None;
+        self.notice = None;
+        self.open_error = None;
+        self.cache.clear();
+        self.inflight.clear();
+        self.visible.clear();
+        self.generation += 1;
+        if let (Some(lib), Some(path)) = (self.library.as_mut(), path) {
+            lib.select_path(&path);
+        }
+    }
+
+    /// 一覧で選ばれた冊を開く。開けなければ一覧の状態欄に理由を出す。
+    fn open_row(&mut self, row: &BookRow) {
+        match Book::open(&row.path, row.kind) {
+            Ok(book) => self.set_book(row.title.clone(), book),
+            Err(err) => {
+                if let Some(lib) = self.library.as_mut() {
+                    lib.set_status(format!("開けません（{}）: {err}", row.title));
+                }
+            }
+        }
+    }
+
+    /// 今の冊と入れ替えて先頭頁から読む。
+    fn set_book(&mut self, title: String, book: Book) {
+        self.title = title;
+        self.book = Some(Arc::new(book));
+        self.page = 0;
+        self.prompt = None;
+        self.notice = None;
+        self.open_error = None;
+        self.cache.clear();
+        self.inflight.clear();
+        self.visible.clear();
+        self.generation += 1;
     }
 
     /// 次冊/前冊を索引 DB の順で探すようにする（無ければ同フォルダの自然順）。
@@ -367,18 +434,7 @@ impl ViewApp {
     /// `path`（zip かフォルダ）を開いて今の冊と入れ替える。失敗なら今の表示は保ち、文言を出す。
     pub fn open_dropped(&mut self, path: &Path) {
         match open_path(path) {
-            Ok((title, book)) => {
-                self.title = title;
-                self.book = Some(Arc::new(book));
-                self.page = 0;
-                self.prompt = None;
-                self.notice = None;
-                self.open_error = None;
-                self.cache.clear();
-                self.inflight.clear();
-                self.visible.clear();
-                self.generation += 1;
-            }
+            Ok((title, book)) => self.set_book(title, book),
             Err(err) => self.open_error = Some(format!("{err:#}")),
         }
     }
@@ -515,6 +571,17 @@ impl ViewApp {
         if let Some(err) = &self.open_error {
             ui.colored_label(egui::Color32::LIGHT_RED, err);
         }
+        if self.book.is_none()
+            && let Some(lib) = self.library.as_mut()
+        {
+            match lib.show(ui) {
+                Some(Action::Open(row)) => self.open_row(&row),
+                Some(Action::Close) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                None => {}
+            }
+            // 開いた同じフレームの Enter/Esc を閲覧側で拾わない
+            return;
+        }
         if self.book.is_none() {
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -582,6 +649,10 @@ impl ViewApp {
     /// 確認中でないときのキー/ホイール入力（Esc 終了・F トグル・頁送り）。
     fn handle_input(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if self.library.is_some() {
+                self.back_to_library();
+                return;
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if ctx.input(spread_toggle_pressed) {
@@ -788,6 +859,19 @@ fn register_font(ctx: &egui::Context, data: Vec<u8>) {
         .or_default()
         .push("jp".into());
     ctx.set_fonts(fonts);
+}
+
+/// 引数なし起動（#1）。索引 DB があって冊が入っていれば一覧、無ければ空の窓（ドロップ待ち）。
+/// 一覧のときは表紙の無い冊の表紙を裏で作り始める。DB が無いときに空の DB を作らない。
+pub fn run_start(db: &Path, root: Option<&Path>) -> anyhow::Result<()> {
+    if db.exists() {
+        let library = Library::open(db, root)?;
+        if !library.rows().is_empty() {
+            library.spawn_cover_generation();
+            return launch(ViewApp::with_library(library));
+        }
+    }
+    run_empty(None)
 }
 
 /// 空の窓を開く（zip / フォルダのドロップ待ち）。窓が閉じるまで戻らない。
