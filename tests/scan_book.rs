@@ -186,3 +186,56 @@ fn readable_tree_has_no_skipped() {
     write_zip(&t.0.join("a/v.zip"), &["1.png"]);
     assert!(scan_root_full(&t.0).unwrap().skipped.is_empty());
 }
+
+/// CP932（Shift_JIS）で書く。テスト用に encoding_rs で作る。
+fn sjis(s: &str) -> Vec<u8> {
+    let (bytes, _, had_errors) = encoding_rs::SHIFT_JIS.encode(s);
+    assert!(!had_errors);
+    bytes.into_owned()
+}
+
+/// #6: UTF-8 フラグなしの CP932 名の頁を文字化けさせず、自然順で並べる。
+/// 「表」は 2 バイト目が 0x5C（`\`）なので、区切りの置換を復号より先にすると壊れる。
+#[test]
+fn cp932_entry_names_are_decoded_and_sorted_naturally() {
+    let t = TmpDir::new("cp932");
+    let path = t.0.join("old.cbz");
+    let png = common::png_bytes();
+    let names = ["第10話.png", "第2話.png", "表紙/表1.png"];
+    let raw: Vec<Vec<u8>> = names.iter().map(|n| sjis(n)).collect();
+    // 前提: どれも UTF-8 としては不正（CP437 で読まれると化ける）
+    assert!(raw.iter().all(|r| std::str::from_utf8(r).is_err()));
+    let entries: Vec<(&[u8], &[u8])> = raw.iter().map(|r| (r.as_slice(), png.as_slice())).collect();
+    common::write_zip_raw_names(&path, &entries);
+
+    let book = Book::open(&path, BookKind::Zip).unwrap();
+    assert_eq!(
+        book.page_names(),
+        ["第2話.png", "第10話.png", "表紙/表1.png"]
+    );
+    for i in 0..book.page_count() {
+        assert_eq!(book.read_page_bytes(i).unwrap(), png);
+    }
+}
+
+/// UTF-8 の名前はそのまま（CP932 として読み直さない）。
+#[test]
+fn utf8_entry_names_are_kept_as_utf8() {
+    let t = TmpDir::new("utf8-raw");
+    let path = t.0.join("new.cbz");
+    let png = common::png_bytes();
+    common::write_zip_raw_names(&path, &[("第1話.png".as_bytes(), png.as_slice())]);
+    let book = Book::open(&path, BookKind::Zip).unwrap();
+    assert_eq!(book.page_names(), ["第1話.png"]);
+}
+
+/// UTF-8 でも CP932 でも読めない名前は従来どおり zip クレートの解釈（CP437）で開ける。
+#[test]
+fn names_invalid_in_both_fall_back_without_error() {
+    let t = TmpDir::new("cp437");
+    let path = t.0.join("odd.cbz");
+    let png = common::png_bytes();
+    common::write_zip_raw_names(&path, &[(&[0xFF, b'.', b'p', b'n', b'g'], png.as_slice())]);
+    let book = Book::open(&path, BookKind::Zip).unwrap();
+    assert_eq!(book.page_count(), 1);
+}

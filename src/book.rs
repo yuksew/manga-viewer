@@ -47,6 +47,18 @@ pub fn is_image_name(path: &str) -> bool {
     ext_lower(base).is_some_and(|e| IMAGE_EXTS.contains(&e.as_str()))
 }
 
+/// ZIP のエントリ名が UTF-8 でなく、CP932（Shift_JIS）として読めるならその文字列（#6）。
+/// 古い日本の zip/cbz は UTF-8 フラグなしの CP932 で名前を書いていることが多い。
+/// UTF-8 として正しい名前（ASCII を含む）と CP932 でも読めない名前は `None`
+/// （呼び手は zip クレートの解釈 = UTF-8 か CP437 に任せる）。
+fn decode_cp932(raw: &[u8]) -> Option<String> {
+    if std::str::from_utf8(raw).is_ok() {
+        return None;
+    }
+    let (name, had_errors) = encoding_rs::SHIFT_JIS.decode_without_bom_handling(raw);
+    (!had_errors).then(|| name.into_owned())
+}
+
 enum Source {
     Zip(Mutex<ZipArchive<File>>),
     Folder(PathBuf),
@@ -80,10 +92,17 @@ impl Book {
                     if entry.is_dir() {
                         continue;
                     }
-                    let name = entry
-                        .name()
-                        .map_err(|e| BookError::Zip(format!("パスが UTF-8 ではありません: {e}")))?
-                        .replace('\\', "/");
+                    // CP932 として読めればそれを優先し、`\` の置換は復号の後で行う（#6）
+                    let name = match decode_cp932(entry.name_raw()) {
+                        Some(name) => name,
+                        None => entry
+                            .name()
+                            .map_err(|e| {
+                                BookError::Zip(format!("パスが UTF-8 ではありません: {e}"))
+                            })?
+                            .into_owned(),
+                    }
+                    .replace('\\', "/");
                     if !is_image_name(&name) {
                         continue;
                     }

@@ -143,3 +143,69 @@ impl Drop for DenyList {
             .output();
     }
 }
+
+/// エントリ名を生のバイトのまま書いた無圧縮 zip（UTF-8 フラグなし）。
+/// zip クレートの書き手は名前を UTF-8 で書くので、古い CP932 の cbz を再現するのに使う（#6）。
+pub fn write_zip_raw_names(path: &Path, entries: &[(&[u8], &[u8])]) {
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = !0u32;
+        for &b in data {
+            crc ^= u32::from(b);
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+    let mut out = Vec::new();
+    let mut central = Vec::new();
+    for (name, data) in entries {
+        let offset = out.len() as u32;
+        let crc = crc32(data);
+        let (n, len) = (name.len() as u16, data.len() as u32);
+        // ローカルヘッダ: 署名, version, flags=0, method=0, time, date, crc, sizes, name len, extra len
+        out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+        for v in [20u16, 0, 0, 0, 0x21] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [crc, len, len] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out.extend_from_slice(&n.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(name);
+        out.extend_from_slice(data);
+        // 中央ディレクトリ
+        central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+        for v in [20u16, 20, 0, 0, 0, 0x21] {
+            central.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [crc, len, len] {
+            central.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [n, 0, 0, 0, 0] {
+            central.extend_from_slice(&v.to_le_bytes());
+        }
+        central.extend_from_slice(&0u32.to_le_bytes());
+        central.extend_from_slice(&offset.to_le_bytes());
+        central.extend_from_slice(name);
+    }
+    let cd_offset = out.len() as u32;
+    out.extend_from_slice(&central);
+    out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+    let count = entries.len() as u16;
+    for v in [0u16, 0, count, count] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out.extend_from_slice(&(central.len() as u32).to_le_bytes());
+    out.extend_from_slice(&cd_offset.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    fs::write(path, out).unwrap();
+}
