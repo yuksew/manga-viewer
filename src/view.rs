@@ -162,7 +162,10 @@ pub enum Nav {
     Prompt(NavDir),
 }
 
-/// 左頁 `page` から `delta` 回送る。見開きは 1 回 2 頁、最終頁判定は右側の頁で行う。
+/// 先頭側の頁 `page` から `delta` 回送る。見開きは 1 回 2 頁。
+/// 見開きは右綴じ（右半分が `page`=偶数索引、左半分が `page+1`=奇数索引）なので、
+/// 最終頁判定は右側の頁 `page`（偶数索引）ではなく見開きの末尾 `page+1`（左側）で行い、
+/// 最初頁判定は `page == 0`（右側の頁）で行う。端の意味は単頁時と変わらない。
 #[must_use]
 pub fn plan_nav(page: usize, delta: isize, spread: bool, count: usize) -> Nav {
     let last = count.saturating_sub(1);
@@ -432,10 +435,13 @@ impl ViewApp {
         // 左右の領域を明示的に切り、各頁をその中へ描く（レイアウト任せにしない）
         let area = ui.available_rect_before_wrap();
         let w = area.width() / self.visible.len().max(1) as f32;
+        let n = self.visible.len();
         for (k, i) in self.visible.iter().enumerate() {
             let Some(slot) = self.cache.get(i) else {
                 continue;
             };
+            // 右綴じ: 見開きは visible=[page, page+1] の page（1ページ目）を右半分、page+1 を左半分に置く
+            let k = if n == 2 { 1 - k } else { k };
             let min = area.min + egui::vec2(w * k as f32, 0.0);
             let rect = egui::Rect::from_min_size(min, egui::vec2(w, area.height()));
             draw_slot(ui, rect, slot);

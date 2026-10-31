@@ -77,6 +77,47 @@ fn spread_draws_two_images_side_by_side_at_real_window_widths() {
     }
 }
 
+/// 頁ごとに一辺の違う正方形 PNG を入れた zip（描画矩形の大きさで頁を見分けるため）。
+fn zip_with_sizes(tag: &str, sides: &[u32]) -> (TmpDir, std::path::PathBuf) {
+    use std::io::Write;
+    let dir = TmpDir::new(tag);
+    let zip = dir.0.join("a.zip");
+    let mut w = zip::ZipWriter::new(std::fs::File::create(&zip).unwrap());
+    for (i, side) in sides.iter().enumerate() {
+        let img = image::RgbImage::from_pixel(*side, *side, image::Rgb([200, 100, 50]));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+        w.start_file(
+            format!("{}.png", i + 1),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        w.write_all(&buf.into_inner()).unwrap();
+    }
+    w.finish().unwrap();
+    (dir, zip)
+}
+
+#[test]
+fn spread_puts_first_page_on_the_right_and_second_on_the_left() {
+    // 1 ページ目は 20px、2 ページ目は 60px の正方形。右綴じなら右半分が 20px、左半分が 60px
+    let (_dir, zip) = zip_with_sizes("sd-rtl", &[20, 60, 40]);
+    let mut app = app_for(&zip);
+    run(&mut app, 900.0, vec![]);
+    let (_, rects) = run(&mut app, 900.0, vec![key_event(egui::Key::F)]);
+    assert_eq!(rects.len(), 2, "{rects:?}");
+    let (left, right) = (rects[0], rects[1]);
+    assert!(left.max.x <= 450.5 && right.min.x >= 449.5, "{rects:?}");
+    assert!(
+        (right.width() - 20.0).abs() < 0.5,
+        "右は 1 ページ目: {rects:?}"
+    );
+    assert!(
+        (left.width() - 60.0).abs() < 0.5,
+        "左は 2 ページ目: {rects:?}"
+    );
+}
+
 #[test]
 fn f_works_from_text_event_only_and_not_twice() {
     let (_dir, zip) = zip_of("sd-text", 3);
