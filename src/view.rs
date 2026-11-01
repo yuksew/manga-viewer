@@ -302,7 +302,7 @@ fn nav_delta(i: &egui::InputState) -> isize {
 }
 
 /// 確認中に、確認の向きと逆へホイールしたか（次冊の確認中に上、前冊の確認中に下）。
-/// 逆向きは「戻りたい」意思なので、確認を閉じる（いいえ扱い）。同じ向きのホイールは従来どおり無視。
+/// 逆向きは「戻りたい」意思なので、確認を閉じる。同じ向きのホイールは従来どおり無視。
 fn wheel_reverses(i: &egui::InputState, dir: NavDir) -> bool {
     i.events.iter().any(|e| match e {
         egui::Event::MouseWheel { delta, .. } => match dir {
@@ -324,6 +324,8 @@ pub struct PromptLayout {
     pub button: egui::Vec2,
     /// ボタンの間
     pub gap: f32,
+    /// ボタンの文字の大きさ（「次のファイル」6 文字がボタンに収まる）
+    pub button_text: f32,
     /// 見出しの文字の大きさ
     pub title_size: f32,
 }
@@ -350,6 +352,7 @@ impl PromptLayout {
             margin,
             button: egui::vec2(button_w, 60.0),
             gap,
+            button_text: ((button_w - 16.0) / 6.5).clamp(9.0, 22.0),
             // 見出し 10 文字が 1 行に収まる大きさ（全角 1 文字 ≒ 文字の大きさ）
             title_size: (inner / 10.5).clamp(18.0, 28.0),
         }
@@ -775,14 +778,15 @@ impl ViewApp {
         }
     }
 
-    /// 次冊/前冊の確認への答え。はいなら候補を解決して開く（無ければ通知を出して現在冊のまま）。
-    pub fn answer_prompt(&mut self, yes: bool) {
-        let Some(dir) = self.prompt.take() else {
-            return;
-        };
-        if !yes {
+    /// 次冊/前冊の確認への答え。`open` の向きの冊を開く（`None` は閉じて今の頁のまま）。
+    /// 候補が無ければ通知を出して現在冊のまま。確認の向きと逆の冊も選べる。
+    pub fn answer_prompt(&mut self, open: Option<NavDir>) {
+        if self.prompt.take().is_none() {
             return;
         }
+        let Some(dir) = open else {
+            return;
+        };
         let Some(book) = &self.book else { return };
         let cur = book.path().to_path_buf();
         let rows = self
@@ -800,16 +804,17 @@ impl ViewApp {
         }
     }
 
-    /// 確認を窓中央に浮かせて出す（背景は暗くする）。Enter=はい / Esc=いいえ / 逆向きホイール=閉じる。
+    /// 確認を窓中央に浮かせて出す（背景は暗くする）。「前のファイル」「次のファイル」のどちらも
+    /// 選べ、送ってきた向きのボタンを強調する。Enter=強調した向き / Esc・逆向きホイール=閉じる。
     /// `keys` が偽（確認を出したフレーム）は入力で答えない。
     fn show_prompt(&mut self, ui: &mut egui::Ui, dir: NavDir, keys: bool) {
         let ctx = ui.ctx().clone();
         let mut answer = None;
         if !keys {
         } else if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
-            answer = Some(true);
+            answer = Some(Some(dir));
         } else if ctx.input(|i| i.key_pressed(egui::Key::Escape) || wheel_reverses(i, dir)) {
-            answer = Some(false);
+            answer = Some(None);
         }
 
         let dim = egui::LayerId::new(egui::Order::Middle, egui::Id::unique("nav-prompt-dim"));
@@ -819,9 +824,9 @@ impl ViewApp {
             egui::Color32::from_black_alpha(150),
         );
 
-        let (head, title) = match dir {
-            NavDir::Next => ("最後のページです", "次のファイルを開きますか？"),
-            NavDir::Prev => ("最初のページです", "前のファイルを開きますか？"),
+        let title = match dir {
+            NavDir::Next => "最後のページです",
+            NavDir::Prev => "最初のページです",
         };
         let screen = ctx.content_rect();
         let lay = PromptLayout::fit(screen.width());
@@ -841,24 +846,25 @@ impl ViewApp {
             .show(&mut panel_ui, |ui| {
                 ui.set_width(inner);
                 ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new(head).size(16.0).weak());
-                    ui.add_space(4.0);
                     ui.label(egui::RichText::new(title).size(lay.title_size).strong());
                     ui.add_space(20.0);
                 });
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = lay.gap;
                     ui.add_space((inner - lay.button.x * 2.0 - lay.gap) / 2.0);
-                    let yes = egui::Button::new(egui::RichText::new("はい").size(24.0).strong())
-                        .min_size(lay.button)
-                        .fill(ui.visuals().selection.bg_fill);
-                    if ui.add(yes).clicked() {
-                        answer = Some(true);
-                    }
-                    let no = egui::Button::new(egui::RichText::new("いいえ").size(24.0))
-                        .min_size(lay.button);
-                    if ui.add(no).clicked() {
-                        answer = Some(false);
+                    // → で進む向きに合わせて、左に前・右に次
+                    for (to, label) in [(NavDir::Prev, "前のファイル"), (NavDir::Next, "次のファイル")]
+                    {
+                        let text = egui::RichText::new(label).size(lay.button_text);
+                        let button = if to == dir {
+                            egui::Button::new(text.strong()).fill(ui.visuals().selection.bg_fill)
+                        } else {
+                            egui::Button::new(text)
+                        };
+                        let button = button.min_size(lay.button);
+                        if ui.add(button).clicked() {
+                            answer = Some(Some(to));
+                        }
                     }
                 });
             });
@@ -867,8 +873,8 @@ impl ViewApp {
             ctx.data_mut(|d| d.insert_temp(height_id, measured));
             ctx.request_repaint();
         }
-        if let Some(yes) = answer {
-            self.answer_prompt(yes);
+        if let Some(open) = answer {
+            self.answer_prompt(open);
         }
     }
 
@@ -1200,7 +1206,7 @@ impl ViewApp {
             self.drag = Drag::default();
             return;
         }
-        // 閲覧中は押した位置がボタン（はい/いいえ）などのウィジェットなら動かさない。冊を開いていない
+        // 閲覧中は押した位置が確認のボタンなどのウィジェットなら動かさない。冊を開いていない
         // とき（一覧・空の窓）は、表紙のマスのようにクリックだけを受けるものの上からでも動かし、
         // ドラッグを掴んだウィジェット（スクロールバー）があるときだけ動かさない
         let on_widget = if self.book.is_some() {

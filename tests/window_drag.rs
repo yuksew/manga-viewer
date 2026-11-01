@@ -162,8 +162,8 @@ fn reading_view_still_does_not_drag_from_prompt_buttons() {
     let (texts, _) = h.frame(vec![]);
     let pos = texts
         .iter()
-        .find(|(t, _)| t == "いいえ")
-        .expect("いいえ が描かれていない")
+        .find(|(t, _)| t == "前のファイル")
+        .expect("前のファイル が描かれていない")
         .1
         + egui::vec2(8.0, 8.0);
     assert!(!h.drag_from(pos), "ボタンの上からは動かさない");

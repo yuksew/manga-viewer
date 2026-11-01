@@ -203,7 +203,7 @@ fn spread_toggle_shows_two_pages_and_steps_by_two() {
     frame(&mut app, vec![wheel(-1.0)]);
     assert_eq!(app.prompt(), Some(NavDir::Next));
     // 単ページに戻すと組の先頭の頁
-    app.answer_prompt(false);
+    app.answer_prompt(None);
     let text = frame(&mut app, vec![key_event(egui::Key::F)]);
     assert!(text.contains("4/5  ["), "{text}");
     // 単ページで組の後ろ側（5 頁目）にいて見開きにすると、その組（4-5）に揃う
@@ -253,7 +253,7 @@ fn next_prompt_opens_next_file_without_db() {
     assert_eq!(app.page(), 1);
     let text = frame(&mut app, vec![wheel(-1.0)]);
     assert_eq!(app.prompt(), Some(NavDir::Next));
-    assert!(text.contains("次のファイルを開きますか"), "{text}");
+    assert!(text.contains("最後のページです"), "{text}");
     // プロンプト中の送り入力（キー・同じ向きのホイール）は無視
     frame(&mut app, vec![key_event(egui::Key::ArrowLeft)]);
     frame(
@@ -262,7 +262,7 @@ fn next_prompt_opens_next_file_without_db() {
     );
     assert_eq!(app.prompt(), Some(NavDir::Next));
     assert_eq!((app.title(), app.page()), ("v1", 1));
-    // Enter = はい
+    // Enter = 送ってきた向き（次のファイル）
     let text = frame(&mut app, vec![key_event(egui::Key::Enter)]);
     assert_eq!((app.title(), app.page()), ("v2", 0), "{text}");
     assert!(app.prompt().is_none());
@@ -273,7 +273,7 @@ fn next_prompt_opens_next_file_without_db() {
     assert_eq!(app.prompt(), Some(NavDir::Next));
     frame(&mut app, vec![key_event(egui::Key::Enter)]);
     assert_eq!(app.title(), "v3");
-    // 最後の冊の最終頁: はい → 通知を出して現在冊のまま
+    // 最後の冊の最終頁: Enter → 通知を出して現在冊のまま
     frame(&mut app, vec![key_event(egui::Key::ArrowRight)]);
     let text = frame(&mut app, vec![key_event(egui::Key::Enter)]);
     assert_eq!(app.title(), "v3");
@@ -291,12 +291,12 @@ fn prev_prompt_no_keeps_book_yes_opens_previous() {
     let mut app = app_for(&dir.0.join("v2.zip"));
     let text = frame(&mut app, vec![wheel(1.0)]);
     assert_eq!(app.prompt(), Some(NavDir::Prev));
-    assert!(text.contains("前のファイルを開きますか"), "{text}");
-    // Esc = いいえ（窓は閉じず、プロンプトだけ消える）
+    assert!(text.contains("最初のページです"), "{text}");
+    // Esc = 閉じる（窓は閉じず、プロンプトだけ消える）
     frame(&mut app, vec![key_event(egui::Key::Escape)]);
     assert!(app.prompt().is_none());
     assert_eq!(app.title(), "v2");
-    // ← でもう一度出し、はい
+    // ← でもう一度出し、Enter で前のファイル
     frame(&mut app, vec![key_event(egui::Key::ArrowLeft)]);
     assert_eq!(app.prompt(), Some(NavDir::Prev));
     frame(&mut app, vec![key_event(egui::Key::Enter)]);
@@ -324,7 +324,7 @@ fn reverse_wheel_closes_prompt_without_paging() {
     frame(&mut app, vec![wheel(1.0)]);
     assert!(app.prompt().is_none());
     let text = frame(&mut app, vec![]);
-    assert!(!text.contains("次のファイルを開きますか"), "{text}");
+    assert!(!text.contains("最後のページです"), "{text}");
     assert_eq!((app.title(), app.page()), ("v1", 1));
 
     // 前冊の確認は下ホイールで閉じる
@@ -384,33 +384,48 @@ fn click_button(ctx: &egui::Context, app: &mut ViewApp, label: &str) {
 }
 
 #[test]
-fn prompt_buttons_answer_by_mouse_click() {
+fn prompt_buttons_open_either_neighbor_by_mouse_click() {
     let dir = TmpDir::new("nav-mouse");
-    write_zip(&dir.0.join("v1.zip"), &["1.png"]);
-    write_zip(&dir.0.join("v2.zip"), &["1.png"]);
-    let mut app = app_for(&dir.0.join("v1.zip"));
+    for name in ["v1", "v2", "v3"] {
+        write_zip(&dir.0.join(format!("{name}.zip")), &["1.png"]);
+    }
+    let mut app = app_for(&dir.0.join("v2.zip"));
     let ctx = egui::Context::default();
+    // 最後のページで出た確認から、前のファイルも開ける
     frame_ctx(&ctx, &mut app, vec![key_event(egui::Key::ArrowRight)]);
     assert_eq!(app.prompt(), Some(NavDir::Next));
-    // いいえ: 閉じて今の冊のまま
-    click_button(&ctx, &mut app, "いいえ");
+    click_button(&ctx, &mut app, "前のファイル");
     assert!(app.prompt().is_none());
     assert_eq!(app.title(), "v1");
-    // はい: 次の冊へ
-    frame_ctx(&ctx, &mut app, vec![key_event(egui::Key::ArrowRight)]);
-    assert_eq!(app.prompt(), Some(NavDir::Next));
-    click_button(&ctx, &mut app, "はい");
+    // 最初のページで出た確認から、次のファイルも開ける
+    frame_ctx(&ctx, &mut app, vec![key_event(egui::Key::ArrowLeft)]);
+    assert_eq!(app.prompt(), Some(NavDir::Prev));
+    click_button(&ctx, &mut app, "次のファイル");
     assert!(app.prompt().is_none());
     assert_eq!(app.title(), "v2");
+    // 候補が無い向きは通知を出して今の冊のまま
+    let mut app = app_for(&dir.0.join("v1.zip"));
+    frame_ctx(&ctx, &mut app, vec![key_event(egui::Key::ArrowRight)]);
+    click_button(&ctx, &mut app, "前のファイル");
+    assert_eq!(app.title(), "v1");
+    let texts = frame_ctx(&ctx, &mut app, vec![]);
+    assert!(
+        texts.iter().any(|(t, _)| t == "前のファイルはありません"),
+        "{texts:?}"
+    );
 }
 
 #[test]
-fn prompt_floats_with_yes_no_buttons() {
+fn prompt_floats_with_prev_and_next_buttons() {
     let dir = TmpDir::new("nav-click");
     write_zip(&dir.0.join("v1.zip"), &["1.png"]);
     let mut app = app_for(&dir.0.join("v1.zip"));
     let text = frame(&mut app, vec![key_event(egui::Key::ArrowRight)]);
-    assert!(text.contains("はい") && text.contains("いいえ"), "{text}");
+    assert!(
+        text.contains("前のファイル") && text.contains("次のファイル"),
+        "{text}"
+    );
+    assert!(!text.contains("はい") && !text.contains("いいえ"), "{text}");
     assert_eq!(app.prompt(), Some(NavDir::Next));
 }
 
